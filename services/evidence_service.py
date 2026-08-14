@@ -4,7 +4,7 @@ from data.mock_achievements import PAPERS, PROJECTS
 
 class EvidenceService:
     def exists(self, evidence_id: str) -> bool:
-        prefixes = ("ev_employment_", "ev_role_", "ev_company_", "ev_event_", "ev_graph_")
+        prefixes = ("ev_employment_", "ev_role_", "ev_company_", "ev_event_", "ev_graph_", "mysql_paper_")
         return any(row["evidence_id"] == evidence_id for row in PAPERS + PROJECTS) or evidence_id.startswith(prefixes)
 
     def get(self, evidence_id: str) -> dict | None:

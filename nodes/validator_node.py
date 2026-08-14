@@ -4,6 +4,7 @@ from graph.state import GraphRAGState
 from models.schemas import ValidationResult
 from services.entity_service import EntityService
 from services.evidence_service import EvidenceService
+from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
 
@@ -69,4 +70,6 @@ def validator_node(state: GraphRAGState) -> dict:
                 errors.append("TOP 产业事件未按重要度降序排列")
     result = ValidationResult(valid=not errors and not missing, needs_replan=bool(missing or errors), missing_domains=missing, errors=errors)
     logger.info("Validator: valid=%s errors=%s", result.valid, result.errors)
+    emit_event("RULE_VALIDATION_COMPLETED", thread_id=state.get("thread_id"), status="PASS" if result.valid else "FAIL",
+               errors=result.errors, missing_domains=result.missing_domains)
     return {"validation_result": result.model_dump()}

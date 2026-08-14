@@ -31,3 +31,4 @@ dist/
 *.db
 *.sqlite
 *.sqlite3
+.runtime/

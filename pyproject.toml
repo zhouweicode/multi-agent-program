@@ -1,7 +1,7 @@
 [project]
 name = "tech-kg-multi-agent-graphrag"
 version = "0.1.0"
-description = "亿级科技知识图谱 Multi-Agent GraphRAG 教学项目（第一阶段）"
+description = "亿级科技知识图谱 Multi-Agent GraphRAG 教学项目"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -9,6 +9,11 @@ dependencies = [
   "pydantic>=2.9,<3",
   "langchain-core>=0.3,<2",
   "langgraph>=0.2,<2",
+  "langgraph-checkpoint-sqlite>=3,<4",
+  "langchain-openai>=1,<2",
+  "PyMySQL>=1.1,<2",
+  "neo4j>=5.28,<7",
+  "pymilvus[milvus-lite]>=3.0,<4",
 ]
 
 [project.optional-dependencies]
@@ -17,4 +22,3 @@ dev = ["pytest>=8,<9"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-

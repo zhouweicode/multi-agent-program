@@ -8,7 +8,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
     graph = build_graph()
     config = {"configurable": {"thread_id": "stage-1-demo"}}
-    initial = {"question": "综合分析张伟和李明的学术和职业合作关系。", "replan_count": 0, "max_replans": 2,
+    initial = {"thread_id": "stage-1-demo", "question": "综合分析张伟和李明的学术和职业合作关系。", "replan_count": 0, "max_replans": 2,
                "resolved_entities": {}, "task_history": []}
     first = graph.invoke(initial, config=config)
     interrupts = first.get("__interrupt__", ())
@@ -29,4 +29,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

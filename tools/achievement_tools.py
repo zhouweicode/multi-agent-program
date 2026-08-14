@@ -1,19 +1,18 @@
 """科研成果 Agent 独享工具。"""
 from langchain_core.tools import tool
-from data.mock_achievements import PAPERS, PROJECTS
+from services.achievement_service import AchievementService
 
 
 @tool
 def get_author_papers(entity_id: str) -> list[dict]:
     """查询专家发表的论文。"""
-    return [p.copy() for p in PAPERS if entity_id in p["authors"]]
+    return AchievementService().get_author_papers(entity_id)
 
 
 @tool
 def get_common_papers(entity_ids: list[str]) -> list[dict]:
     """查询两位或多位专家共同署名论文。"""
-    wanted = set(entity_ids)
-    return [p.copy() for p in PAPERS if wanted.issubset(set(p["authors"]))]
+    return AchievementService().get_common_papers(entity_ids)
 
 
 @tool
@@ -26,5 +25,4 @@ def aggregate_cooperation(entity_ids: list[str]) -> dict:
 @tool
 def get_common_projects(entity_ids: list[str]) -> list[dict]:
     """查询两位或多位专家共同参与的科研项目。"""
-    wanted = set(entity_ids)
-    return [row.copy() for row in PROJECTS if wanted.issubset(set(row["participant_ids"]))]
+    return AchievementService().get_common_projects(entity_ids)

@@ -4,8 +4,9 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from models.schemas import RouterOutput, SupervisorPlan, PlannedTask
+from models.settings import Settings
 
 
 class MockStructuredModel:
@@ -26,7 +27,8 @@ class MockStructuredModel:
                             complexity="complex" if complex_query else "simple", primary_domain=domain,
                             requires_verification="长期稳定" in question or "核心科研合作伙伴" in question)
 
-    def invoke_supervisor(self, question: str, resolved_entities: dict[str, str], validation_result: dict | None = None) -> SupervisorPlan:
+    def invoke_supervisor(self, question: str, resolved_entities: dict[str, str], validation_result: dict | None = None,
+                          verification_result: dict | None = None, task_history: list[dict] | None = None) -> SupervisorPlan:
         specs = [
             ("talent", "talent_agent", "查询专家的共同任职经历与职业关系", ("职业", "任职", "同事", "校友")),
             ("achievement", "achievement_agent", "查询专家的共同论文与学术合作", ("学术", "论文", "科研", "专利")),
@@ -34,11 +36,18 @@ class MockStructuredModel:
             ("industry", "industry_agent", "查询产业链结构、企业和重点事件", ("产业", "产业链", "事件", "TOP")),
             ("graph", "graph_reasoning_agent", "查询实体间路径、多跳关系和关系强度", ("间接", "多跳", "路径", "关系强度", "所有可能")),
         ]
-        tasks = [PlannedTask(task_id=f"task_{domain}", agent=agent, goal=goal)
-                 for domain, agent, goal, keywords in specs if any(word in question for word in keywords)]
+        missing_domains = set((validation_result or {}).get("missing_domains", []))
+        missing_evidence = (verification_result or {}).get("missing_evidence", [])
+        is_replan = bool(validation_result or verification_result)
+        tasks = [PlannedTask(task_id=f"{'replan' if is_replan else 'task'}_{domain}", agent=agent,
+                             goal=(goal + (f"；重点补充：{'、'.join(missing_evidence)}" if missing_evidence else "")))
+                 for domain, agent, goal, keywords in specs
+                 if (domain in missing_domains or (missing_evidence and domain == "achievement") or
+                     (not is_replan and any(word in question for word in keywords)))]
         if not tasks:
             tasks = [PlannedTask(task_id="task_achievement", agent="achievement_agent", goal="查询专家科研合作")]
-        return SupervisorPlan(tasks=tasks, execution_mode="parallel", reason=f"问题涉及 {len(tasks)} 个业务领域，需要并行查询后合并")
+        reason = "根据缺失领域或证据执行最小化重规划" if is_replan else f"问题涉及 {len(tasks)} 个业务领域，需要并行查询后合并"
+        return SupervisorPlan(tasks=tasks, execution_mode="parallel", reason=reason)
 
 
 @dataclass
@@ -50,9 +59,9 @@ class MockToolCallingModel:
         self.allowed_tools = {t.name for t in tools}
         return self
 
-    def invoke(self, payload: dict[str, Any]) -> AIMessage:
+    def invoke(self, messages: list[Any]) -> AIMessage:
+        payload = json.loads(next(msg.content for msg in messages if isinstance(msg, HumanMessage)))
         entity_ids = list(payload["resolved_entities"].values())
-        calls = []
         call_specs = {
             "talent": [("match_employment_overlap", {"entity_ids": entity_ids})],
             "achievement": [("get_common_papers", {"entity_ids": entity_ids}), ("get_common_projects", {"entity_ids": entity_ids}),
@@ -64,10 +73,14 @@ class MockToolCallingModel:
                       ("find_path", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2}),
                       ("calculate_path_strength", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2})],
         }
-        for name, args in call_specs[self.domain]:
-            if name in self.allowed_tools:
-                calls.append({"name": name, "args": args, "id": str(uuid.uuid4()), "type": "tool_call"})
-        return AIMessage(content=json.dumps({"reason": payload["goal"]}, ensure_ascii=False), tool_calls=calls)
+        completed = len([msg for msg in messages if isinstance(msg, ToolMessage)])
+        specs = [(name, args) for name, args in call_specs[self.domain] if name in self.allowed_tools]
+        if completed < len(specs):
+            name, args = specs[completed]
+            return AIMessage(content=f"执行领域任务步骤 {completed + 1}", tool_calls=[
+                {"name": name, "args": args, "id": str(uuid.uuid4()), "type": "tool_call"}
+            ])
+        return AIMessage(content=json.dumps({"status": "complete", "goal": payload["goal"]}, ensure_ascii=False))
 
 
 @dataclass
@@ -108,15 +121,50 @@ class MockVerificationModel:
 
 
 class ModelFactory:
-    """业务代码只依赖此工厂；后续可按配置返回真实 OpenAI/私有模型。"""
+    """统一模型工厂；默认 Mock，MODEL_PROVIDER=openai 时启用真实模型。"""
     @staticmethod
-    def structured_model() -> MockStructuredModel:
-        return MockStructuredModel()
+    def _chat_model() -> Any:
+        settings = Settings.from_env()
+        if settings.model_provider != "openai":
+            raise ValueError(f"不支持的 MODEL_PROVIDER: {settings.model_provider}")
+        if not settings.model_api_key:
+            raise ValueError("MODEL_PROVIDER=openai 时必须设置 MODEL_API_KEY 或 OPENAI_API_KEY")
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model=settings.model_name, api_key=settings.model_api_key,
+                          base_url=settings.model_base_url, temperature=settings.model_temperature)
 
     @staticmethod
-    def tool_calling_model(domain: str) -> MockToolCallingModel:
-        return MockToolCallingModel(domain)
+    def structured_model() -> Any:
+        if Settings.from_env().model_provider == "mock":
+            return MockStructuredModel()
+        return OpenAIStructuredModel(ModelFactory._chat_model())
 
     @staticmethod
-    def verification_model() -> MockVerificationModel:
-        return MockVerificationModel()
+    def tool_calling_model(domain: str) -> Any:
+        if Settings.from_env().model_provider == "mock":
+            return MockToolCallingModel(domain)
+        return ModelFactory._chat_model()
+
+    @staticmethod
+    def verification_model() -> Any:
+        if Settings.from_env().model_provider == "mock":
+            return MockVerificationModel()
+        return ModelFactory._chat_model()
+
+
+class OpenAIStructuredModel:
+    """为 Router/Supervisor 提供与 MockStructuredModel 相同的业务接口。"""
+    def __init__(self, chat_model: Any):
+        self.chat_model = chat_model
+
+    def invoke_router(self, question: str) -> RouterOutput:
+        model = self.chat_model.with_structured_output(RouterOutput)
+        return model.invoke("你是 GraphRAG Router，只做意图、实体 mention、复杂度和主领域分类。\n用户问题：" + question)
+
+    def invoke_supervisor(self, question: str, resolved_entities: dict[str, str], validation_result: dict | None = None,
+                          verification_result: dict | None = None, task_history: list[dict] | None = None) -> SupervisorPlan:
+        model = self.chat_model.with_structured_output(SupervisorPlan)
+        context = {"question": question, "resolved_entities": resolved_entities, "validation_result": validation_result,
+                   "verification_result": verification_result, "task_history": task_history or []}
+        return model.invoke("你是 Planner Node，不调用业务工具。只拆解需要补充的领域任务；重规划时只返回缺失领域。\n" +
+                            json.dumps(context, ensure_ascii=False))

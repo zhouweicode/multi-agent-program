@@ -18,7 +18,10 @@ class VerificationAgent:
 
     def run(self, question: str, entity_ids: list[str], evidence_ids: list[str]) -> dict:
         messages = [
-            SystemMessage(content="你是证据验证 Agent。必须调用工具验证证据、来源、时间线、关系和约束，禁止使用模型自身知识。"),
+            SystemMessage(content=("你是证据验证 Agent。必须调用工具验证证据、来源、时间线、关系和约束，禁止使用模型自身知识。"
+                                   "完成全部必要工具后，返回且只返回 JSON："
+                                   '{"status":"PASS|FAIL","relation":"CORE_RESEARCH_PARTNER","confidence":0到1,'
+                                   '"reason":"依据","needs_replan":true或false,"missing_evidence":[]}')),
             HumanMessage(content=json.dumps({"question": question, "entity_ids": entity_ids,
                                              "evidence_ids": evidence_ids}, ensure_ascii=False)),
         ]

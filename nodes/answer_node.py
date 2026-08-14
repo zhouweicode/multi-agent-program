@@ -1,5 +1,6 @@
 """Answer Node：仅基于图谱返回结果生成中文答案，不补充外部事实。"""
 from graph.state import GraphRAGState
+from services.observability import emit_event
 
 
 def answer_node(state: GraphRAGState) -> dict:
@@ -33,4 +34,6 @@ def answer_node(state: GraphRAGState) -> dict:
         semantic = f"\n语义验证结论：{verdict}长期稳定的核心科研合作伙伴（{verification['status']}，置信度 {verification['confidence']:.0%}）。{verification['reason']}。"
     else:
         semantic = ""
-    return {"final_answer": f"基于当前知识图谱 Mock 数据，{subject} 的分析如下：\n{numbered}{semantic}\n以上结论仅来自已返回且通过规则校验的证据。"}
+    answer = f"基于当前知识图谱 Mock 数据，{subject} 的分析如下：\n{numbered}{semantic}\n以上结论仅来自已返回且通过规则校验的证据。"
+    emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="PASS", has_verification=bool(verification))
+    return {"final_answer": answer}

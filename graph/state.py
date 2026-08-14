@@ -3,6 +3,7 @@ from typing import Any, TypedDict
 
 
 class GraphRAGState(TypedDict, total=False):
+    thread_id: str
     question: str
     intent: str
     complexity: str
@@ -10,6 +11,7 @@ class GraphRAGState(TypedDict, total=False):
     requires_verification: bool
     entity_mentions: list[str]
     resolved_entities: dict[str, str]
+    entity_backend_ids: dict[str, dict[str, str]]
     entity_candidates: dict[str, list[dict[str, Any]]]
     awaiting_user_selection: bool
     plan: dict[str, Any]
@@ -26,4 +28,3 @@ class GraphRAGState(TypedDict, total=False):
     replan_count: int
     max_replans: int
     final_answer: str
-

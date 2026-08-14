@@ -3,6 +3,7 @@ import logging
 from langgraph.types import interrupt
 from graph.state import GraphRAGState
 from services.entity_service import EntityService
+from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
 service = EntityService()
@@ -22,6 +23,7 @@ def entity_resolution_node(state: GraphRAGState) -> dict:
 
     if ambiguous:
         logger.info("Entity Resolution: NEED_USER_SELECTION %s", list(ambiguous))
+        emit_event("ENTITY_RESOLUTION_INTERRUPTED", thread_id=state.get("thread_id"), mentions=list(ambiguous))
         selections = interrupt({"status": "NEED_USER_SELECTION", "candidates": ambiguous,
                                 "instruction": "请为每个姓名选择一个 entity_id"})
         if not isinstance(selections, dict):
@@ -33,5 +35,10 @@ def entity_resolution_node(state: GraphRAGState) -> dict:
             resolved[mention] = entity_id
 
     logger.info("Entity Resolution: resolved=%s", resolved)
-    return {"resolved_entities": resolved, "entity_candidates": candidates, "awaiting_user_selection": False}
-
+    emit_event("ENTITY_RESOLUTION_COMPLETED", thread_id=state.get("thread_id"), resolved_entities=resolved)
+    backend_ids = {
+        mention: service.mapping.backend_ids(entity_id)
+        for mention, entity_id in resolved.items()
+    }
+    return {"resolved_entities": resolved, "entity_backend_ids": backend_ids,
+            "entity_candidates": candidates, "awaiting_user_selection": False}
