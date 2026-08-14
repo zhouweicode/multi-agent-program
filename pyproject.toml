@@ -1,0 +1,20 @@
+[project]
+name = "tech-kg-multi-agent-graphrag"
+version = "0.1.0"
+description = "亿级科技知识图谱 Multi-Agent GraphRAG 教学项目（第一阶段）"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "pydantic>=2.9,<3",
+  "langchain-core>=0.3,<2",
+  "langgraph>=0.2,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
