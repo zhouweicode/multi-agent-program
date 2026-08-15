@@ -20,7 +20,7 @@ def get_employment_history(entity_id: str) -> list[dict]:
         "person_zw_002": [{"organization": "北京理工大学", "role": "研究员", "start_year": 2018, "end_year": None, "evidence_id": "ev_employment_zw_002"}],
         "person_lm_002": [{"organization": "中科院自动化所", "role": "研究员", "start_year": 2016, "end_year": None, "evidence_id": "ev_employment_lm_002"}],
     }
-    return rows.get(entity_id, [])
+    return [{"entity_id": entity_id, **row} for row in rows.get(entity_id, [])]
 
 
 @tool
@@ -36,4 +36,3 @@ def match_employment_overlap(entity_ids: list[str]) -> list[dict]:
                 overlaps.append({"entity_ids": entity_ids, "organization": left["organization"], "from_year": max(left["start_year"], right["start_year"]),
                                  "evidence_ids": [left["evidence_id"], right["evidence_id"]]})
     return overlaps
-

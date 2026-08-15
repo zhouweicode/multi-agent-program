@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>科技知识图谱 · Multi-Agent GraphRAG</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/layout-fix.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">KG</span>
+      <span><strong>GraphRAG Studio</strong><small>Multi-Agent Knowledge Intelligence</small></span>
+    </a>
+    <div class="system-status"><span id="healthDot" class="status-dot"></span><span id="healthText">正在连接系统</span></div>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <div class="eyebrow">STAGE 6 · BGE-M3 + MILVUS + NEO4J</div>
+      <h1>让每一次推理<br><span>清晰可见</span></h1>
+      <p>输入科技知识图谱问题，实时观察 Router、实体消歧、Supervisor、领域 Agent、Tool Calling 与验证链路。</p>
+    </section>
+
+    <section class="query-card panel">
+      <form id="queryForm">
+        <label for="question">向知识图谱提问</label>
+        <div class="query-row">
+          <textarea id="question" rows="3" placeholder="例如：综合分析张伟和李明的学术、职业和产业合作关系。" required></textarea>
+          <button id="submitBtn" type="submit"><span>开始分析</span><span class="arrow">→</span></button>
+        </div>
+        <div class="form-meta">
+          <div class="examples">
+            <span>试试：</span>
+            <button type="button" data-example="张伟发表过哪些论文？">论文查询</button>
+            <button type="button" data-example="综合分析张伟和李明的学术、职业和产业合作关系。">综合关系</button>
+            <button type="button" data-example="判断张伟和李明是不是长期稳定的核心科研合作伙伴。">语义验证</button>
+          </div>
+          <label class="replan-label">最大重规划 <input id="maxReplans" type="number" min="0" max="10" value="2"></label>
+        </div>
+      </form>
+    </section>
+
+    <section id="workspace" class="workspace hidden">
+      <section class="panel flow-panel">
+          <div class="section-heading">
+            <div><span class="section-index">01</span><h2>执行流程</h2></div>
+            <span id="runStatus" class="run-badge">准备中</span>
+          </div>
+          <div id="flow" class="flow">
+            <div class="flow-node" data-node="query"><i>01</i><strong>User Query</strong><small>问题进入系统</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="router"><i>02</i><strong>Router</strong><small>意图与领域分类</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="entity"><i>03</i><strong>Entity Resolution</strong><small>BGE-M3 + RRF</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="supervisor"><i>04</i><strong>Supervisor</strong><small>任务拆解与调度</small></div>
+            <span class="connector">→</span>
+            <div class="agent-cluster" data-node="agents">
+              <span data-agent="talent_agent">Talent</span><span data-agent="achievement_agent">Achievement</span>
+              <span data-agent="enterprise_agent">Enterprise</span><span data-agent="industry_agent">Industry</span>
+              <span data-agent="graph_reasoning_agent">Graph</span>
+            </div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="merge"><i>06</i><strong>Merge</strong><small>结果与证据汇总</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="validator"><i>07</i><strong>Validator</strong><small>确定性规则校验</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node optional" data-node="verification"><i>08</i><strong>Verification</strong><small>复杂语义判断</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="answer"><i>09</i><strong>Answer</strong><small>生成可信答案</small></div>
+          </div>
+      </section>
+
+      <div class="main-column">
+        <section id="selectionPanel" class="panel selection-panel hidden">
+          <div class="section-heading"><div><span class="section-index">02</span><h2>请选择具体专家</h2></div><span class="attention">NEED USER SELECTION</span></div>
+          <p>知识库中检测到同名实体。选择正确的专家后，LangGraph 将从中断点继续执行。</p>
+          <form id="selectionForm"><div id="candidateGroups"></div><button class="primary-action" type="submit">确认并继续执行 →</button></form>
+        </section>
+
+        <section id="answerPanel" class="panel answer-panel hidden">
+          <div class="section-heading"><div><span class="section-index">03</span><h2>最终答案</h2></div><span id="validationBadge" class="pass-badge">VALIDATED</span></div>
+          <div id="answerText" class="answer-text"></div>
+          <div id="entityChips" class="entity-chips"></div>
+        </section>
+      </div>
+
+      <aside class="side-column">
+        <section class="panel timeline-panel">
+          <div class="section-heading compact"><div><span class="section-index">TRACE</span><h2>实时轨迹</h2></div><span id="eventCount">0 events</span></div>
+          <div id="timeline" class="timeline"><div class="empty-state"><span class="pulse-ring"></span>等待执行事件…</div></div>
+        </section>
+        <section class="panel state-panel">
+          <div class="section-heading compact"><div><span class="section-index">STATE</span><h2>GraphRAG State</h2></div><button id="copyState" type="button">复制</button></div>
+          <pre id="stateJson">{}</pre>
+        </section>
+      </aside>
+    </section>
+  </main>
+  <dialog id="eventModal" class="event-modal">
+    <div class="event-modal-card">
+      <div class="event-modal-header">
+        <div><span class="section-index">NODE INSPECTOR</span><h2 id="eventModalTitle">节点详情</h2></div>
+        <button id="closeEventModal" type="button" aria-label="关闭节点详情">×</button>
+      </div>
+      <div class="event-modal-meta" id="eventModalMeta"></div>
+      <div class="event-io-grid">
+        <section><h3>完整输入</h3><pre id="eventInput">{}</pre></section>
+        <section><h3>完整输出</h3><pre id="eventOutput">{}</pre></section>
+      </div>
+      <details class="raw-event"><summary>查看原始事件 JSON</summary><pre id="eventRaw">{}</pre></details>
+    </div>
+  </dialog>
+  <footer>GraphRAG Studio · 数据库返回什么，答案就只说什么</footer>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

@@ -67,26 +67,28 @@ flowchart LR
     MAP --> NEO[Neo4j scholar_id]
 ```
 
-默认使用确定性离线 Embedding，便于测试：
+项目当前默认使用 `ENTITY_BACKEND=milvus` 和真实 BGE-M3；确定性 Mock 仅用于自动化测试和离线回退：
 
 ```bash
-export EMBEDDING_PROVIDER=mock
+export EMBEDDING_PROVIDER=bge_m3
 export ENTITY_BACKEND=milvus
+export HF_HOME=.runtime/huggingface
+export EMBEDDING_CACHE_DIR=.runtime/huggingface
+export GRAPHRAG_MILVUS_URI=.runtime/milvus-bge-m3.db
 python -m scripts.sync_milvus_entities --source mock
 python demo.py
 ```
 
-启用真实 BGE-M3：
+从 MySQL 使用真实 BGE-M3 重建索引：
 
 ```bash
-pip install FlagEmbedding
 export EMBEDDING_PROVIDER=bge_m3
 export EMBEDDING_MODEL_NAME=BAAI/bge-m3
 export ENTITY_BACKEND=milvus
 python -m scripts.sync_milvus_entities --source mysql --limit 10000
 ```
 
-真实 BGE-M3 首次运行会下载模型并使用其 Dense Vector 与 lexical weights。教学测试不会自动下载模型。
+真实 BGE-M3 首次运行会下载模型，并使用 1024 维 Dense Vector 与模型 lexical weights。测试显式注入 Mock Embedding，不重复加载模型。
 
 统一 ID 示例：
 
@@ -135,6 +137,22 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
+启动后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000) 打开 GraphRAG Studio 前端。页面支持：
+
+- 输入自然语言问题并创建独立 `thread_id`；
+- 实时查看 Router、Entity Resolution、Supervisor、Domain Agent、Tool、Merge、Validator、Verification 和 Answer 事件；
+- 在检测到同名专家时选择候选 `entity_id`，从 LangGraph interrupt 中断点恢复；
+- 查看最终中文答案、规则校验状态、实体 ID 和完整 `GraphRAGState`；
+- 使用增量事件游标轮询执行轨迹，不把 Agent Messages 写入 Shared State。
+
+前端是 FastAPI 同源静态页面，不需要 Node.js 构建：
+
+```text
+frontend/index.html
+frontend/styles.css
+frontend/app.js
+```
+
 ## 模型配置
 
 默认是 `auto` 模式：检测到智谱 Key 时使用 GLM-5.2，否则回退 Mock：
@@ -154,7 +172,7 @@ export MODEL_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
 
 需要强制离线时使用 `MODEL_PROVIDER=mock`。密钥只通过环境变量注入，禁止写入源码、README 或提交到 Git。
 
-完整模板见 `.env.example`。代码不会自动读取或提交 `.env`，可由进程管理器注入环境变量。
+完整模板见 `.env.example`。项目会从根目录自动读取 `.env`，且系统环境变量优先级更高；`.env` 已被 Git 忽略，不会提交。
 
 ## 持久化 API
 
@@ -172,6 +190,7 @@ uvicorn app.main:app --reload
 | `POST` | `/queries/{thread_id}/resume` | 提交 `{姓名: entity_id}` 并恢复图 |
 | `GET` | `/queries/{thread_id}` | 查询当前 State 和下一节点 |
 | `GET` | `/queries/{thread_id}/history` | 查询检查点历史 |
+| `GET` | `/queries/{thread_id}/events` | 按增量 cursor 查询实时执行事件 |
 | `GET` | `/health` | 查看阶段、模型后端和 Checkpointer |
 
 默认检查点文件是 `.runtime/checkpoints.sqlite`，已被 `.gitignore` 排除。

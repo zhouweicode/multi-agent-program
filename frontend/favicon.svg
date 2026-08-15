@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#081823"/>
+  <path d="M16 15h32l6 6v22l-6 6H16l-6-6V21z" fill="#102f40" stroke="#39d9d0" stroke-width="2"/>
+  <text x="32" y="38" text-anchor="middle" font-family="Arial,sans-serif" font-size="17" font-weight="700" fill="#39d9d0">KG</text>
+</svg>

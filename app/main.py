@@ -1,15 +1,20 @@
 """支持查询、消歧恢复、状态和历史查询的持久化 FastAPI 层。"""
 from typing import Any
+from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from langgraph.types import Command
 from graph.builder import build_graph
 from models.settings import Settings
 from services.checkpoint_service import build_sqlite_checkpointer
-from services.observability import emit_event
+from services.observability import emit_event, clear_events, get_events
 
 app = FastAPI(title="科技知识图谱 Multi-Agent GraphRAG", version="0.6.0")
 graph = build_graph(checkpointer=build_sqlite_checkpointer())
+frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
+app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
 
 class QueryRequest(BaseModel):
@@ -43,6 +48,11 @@ def health() -> dict:
             "checkpointer": "sqlite"}
 
 
+@app.get("/", include_in_schema=False)
+def frontend() -> FileResponse:
+    return FileResponse(frontend_dir / "index.html")
+
+
 @app.post("/query")
 def query(request: QueryRequest) -> dict:
     return create_query(request)
@@ -50,10 +60,17 @@ def query(request: QueryRequest) -> dict:
 
 @app.post("/queries")
 def create_query(request: QueryRequest) -> dict:
-    emit_event("QUERY_STARTED", thread_id=request.thread_id)
+    clear_events(request.thread_id)
+    emit_event("QUERY_STARTED", thread_id=request.thread_id,
+               node_input={"question": request.question, "thread_id": request.thread_id,
+                           "max_replans": request.max_replans})
     initial = {"thread_id": request.thread_id, "question": request.question, "replan_count": 0, "max_replans": request.max_replans,
                "resolved_entities": {}, "task_history": []}
-    result = graph.invoke(initial, config=_config(request.thread_id))
+    try:
+        result = graph.invoke(initial, config=_config(request.thread_id))
+    except Exception as exc:
+        emit_event("QUERY_FAILED", thread_id=request.thread_id, error_type=type(exc).__name__)
+        raise HTTPException(status_code=502, detail=f"查询执行失败：{type(exc).__name__}: {exc}") from exc
     return _response(request.thread_id, result)
 
 
@@ -62,9 +79,20 @@ def resume_query(thread_id: str, request: ResumeRequest) -> dict:
     snapshot = graph.get_state(_config(thread_id))
     if not snapshot.values:
         raise HTTPException(status_code=404, detail="thread_id 不存在")
-    emit_event("QUERY_RESUMED", thread_id=thread_id)
-    result = graph.invoke(Command(resume=request.selections), config=_config(thread_id))
+    emit_event("QUERY_RESUMED", thread_id=thread_id, node_input={"selections": request.selections})
+    try:
+        result = graph.invoke(Command(resume=request.selections), config=_config(thread_id))
+    except Exception as exc:
+        emit_event("QUERY_FAILED", thread_id=thread_id, error_type=type(exc).__name__)
+        raise HTTPException(status_code=502, detail=f"恢复执行失败：{type(exc).__name__}: {exc}") from exc
     return _response(thread_id, result)
+
+
+@app.get("/queries/{thread_id}/events")
+def get_query_events(thread_id: str, after: int = 0) -> dict:
+    events = get_events(thread_id, max(0, after))
+    cursor = events[-1]["sequence"] if events else max(0, after)
+    return {"thread_id": thread_id, "events": events, "cursor": cursor}
 
 
 @app.get("/queries/{thread_id}")

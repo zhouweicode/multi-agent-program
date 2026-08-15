@@ -44,12 +44,12 @@ class DeterministicHybridEmbedding:
 
 class BGEM3Embedding:
     """真实 BGE-M3 Provider；首次启用会由 FlagEmbedding 下载模型。"""
-    def __init__(self, model_name: str):
+    def __init__(self, model_name: str, cache_dir: str | None = None):
         try:
             from FlagEmbedding import BGEM3FlagModel
         except ImportError as exc:
             raise RuntimeError("EMBEDDING_PROVIDER=bge_m3 需要安装可选依赖: pip install FlagEmbedding") from exc
-        self.model = BGEM3FlagModel(model_name, use_fp16=False)
+        self.model = BGEM3FlagModel(model_name, use_fp16=False, cache_dir=cache_dir)
         probe = self.model.encode(["维度探测"], return_dense=True, return_sparse=True)
         self.dimension = len(probe["dense_vecs"][0])
 
@@ -61,11 +61,25 @@ class BGEM3Embedding:
 
 
 class EmbeddingFactory:
+    _cache: dict[tuple[str, str, int, str], EmbeddingProvider] = {}
+
     @staticmethod
     def create(settings: Settings | None = None) -> EmbeddingProvider:
         settings = settings or Settings.from_env()
+        key = (settings.embedding_provider, settings.embedding_model_name,
+               settings.embedding_dimension, settings.embedding_cache_dir)
+        if key in EmbeddingFactory._cache:
+            return EmbeddingFactory._cache[key]
         if settings.embedding_provider == "mock":
-            return DeterministicHybridEmbedding(settings.embedding_dimension)
-        if settings.embedding_provider == "bge_m3":
-            return BGEM3Embedding(settings.embedding_model_name)
-        raise ValueError(f"不支持的 EMBEDDING_PROVIDER: {settings.embedding_provider}")
+            provider = DeterministicHybridEmbedding(settings.embedding_dimension)
+        elif settings.embedding_provider == "bge_m3":
+            provider = BGEM3Embedding(settings.embedding_model_name, settings.embedding_cache_dir)
+        else:
+            raise ValueError(f"不支持的 EMBEDDING_PROVIDER: {settings.embedding_provider}")
+        EmbeddingFactory._cache[key] = provider
+        return provider
+
+    @staticmethod
+    def clear_cache() -> None:
+        """主要供测试或显式切换模型时释放工厂引用。"""
+        EmbeddingFactory._cache.clear()

@@ -62,7 +62,7 @@ def test_graph_service_delegates_four_operations():
 
 def test_default_services_keep_mock_backend(monkeypatch):
     for key in ("ENTITY_BACKEND", "ACHIEVEMENT_BACKEND", "GRAPH_BACKEND"):
-        monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv(key, "mock")
     assert EntityService().search("张伟")
     assert AchievementService().get_author_papers("person_zw_001")
     assert GraphService().health() == {"backend": "mock", "ready": True}

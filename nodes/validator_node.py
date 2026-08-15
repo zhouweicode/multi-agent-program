@@ -32,8 +32,16 @@ def validator_node(state: GraphRAGState) -> dict:
         if not evidence_service.exists(item["evidence_id"]):
             errors.append(f"evidence_id 不存在: {item['evidence_id']}")
     achievement = state.get("achievement_result", {})
-    common_papers, common_projects, aggregate = None, None, None
+    author_papers, common_papers, common_projects, aggregate = None, None, None, None
     for fact in achievement.get("facts", []):
+        if fact["tool"] == "get_author_papers":
+            author_papers = fact["data"]
+            for paper in fact["data"]:
+                if not entity_ids.intersection(set(paper.get("authors", []))):
+                    errors.append(f"作者论文归属校验失败: {paper.get('paper_id', 'UNKNOWN')}")
+                if (not paper.get("paper_id") or not paper.get("title") or
+                        not isinstance(paper.get("year"), int) or not paper.get("evidence_id")):
+                    errors.append(f"论文数据不完整: {paper.get('paper_id', 'UNKNOWN')}")
         if fact["tool"] == "get_common_papers":
             common_papers = fact["data"]
             for paper in fact["data"]:
@@ -54,8 +62,21 @@ def validator_node(state: GraphRAGState) -> dict:
             aggregate = fact["data"]
             if aggregate["common_paper_count"] != len(common_papers or []):
                 errors.append("共同论文 count 与数据条数不一致")
-    if achievement and (common_papers is None or common_projects is None or aggregate is None):
-        errors.append("科研成果数据完整性校验失败：缺少论文、项目或聚合结果")
+    collaboration_tools = {"get_common_papers", "get_common_projects", "aggregate_cooperation"}
+    used_tools = {fact["tool"] for fact in achievement.get("facts", [])}
+    if achievement and len(entity_ids) == 1 and "get_author_papers" not in used_tools and not (used_tools & collaboration_tools):
+        errors.append("单人论文查询完整性校验失败：缺少作者论文结果")
+    if achievement and (len(entity_ids) > 1 or bool(used_tools & collaboration_tools)) and (
+            common_papers is None or common_projects is None or aggregate is None):
+        errors.append("科研合作数据完整性校验失败：缺少共同论文、共同项目或聚合结果")
+    enterprise = state.get("enterprise_result", {})
+    if enterprise and len(entity_ids) > 1:
+        enterprise_tools = {fact["tool"] for fact in enterprise.get("facts", [])}
+        required_enterprise_tools = {"get_person_company_roles", "get_company_projects", "get_company_patents"}
+        if not required_enterprise_tools.issubset(enterprise_tools):
+            errors.append("企业合作数据完整性校验失败：缺少企业角色、企业项目或企业专利结果")
+            if "enterprise" not in missing:
+                missing.append("enterprise")
     graph_result = state.get("graph_result", {})
     for fact in graph_result.get("facts", []):
         if fact["tool"] == "find_path" and fact["data"].get("found"):

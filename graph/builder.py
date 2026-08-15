@@ -12,22 +12,23 @@ from nodes.merge_node import merge_node
 from nodes.validator_node import validator_node
 from nodes.answer_node import answer_node
 from nodes.verification_node import verification_agent_node
+from services.observability import traced_node
 
 
 def build_graph(checkpointer=None):
     graph = StateGraph(GraphRAGState)
-    graph.add_node("router", router_node)
-    graph.add_node("entity_resolution", entity_resolution_node)
-    graph.add_node("supervisor", supervisor_node)
-    graph.add_node("talent_agent", talent_agent_node)
-    graph.add_node("achievement_agent", achievement_agent_node)
-    graph.add_node("enterprise_agent", enterprise_agent_node)
-    graph.add_node("industry_agent", industry_agent_node)
-    graph.add_node("graph_reasoning_agent", graph_reasoning_agent_node)
-    graph.add_node("merge", merge_node)
-    graph.add_node("validator", validator_node)
-    graph.add_node("answer", answer_node)
-    graph.add_node("verification_agent", verification_agent_node)
+    graph.add_node("router", traced_node("router", router_node))
+    graph.add_node("entity_resolution", traced_node("entity_resolution", entity_resolution_node))
+    graph.add_node("supervisor", traced_node("supervisor", supervisor_node))
+    graph.add_node("talent_agent", traced_node("talent_agent", talent_agent_node))
+    graph.add_node("achievement_agent", traced_node("achievement_agent", achievement_agent_node))
+    graph.add_node("enterprise_agent", traced_node("enterprise_agent", enterprise_agent_node))
+    graph.add_node("industry_agent", traced_node("industry_agent", industry_agent_node))
+    graph.add_node("graph_reasoning_agent", traced_node("graph_reasoning_agent", graph_reasoning_agent_node))
+    graph.add_node("merge", traced_node("merge", merge_node))
+    graph.add_node("validator", traced_node("validator", validator_node))
+    graph.add_node("answer", traced_node("answer", answer_node))
+    graph.add_node("verification_agent", traced_node("verification_agent", verification_agent_node))
     graph.add_edge(START, "router")
     graph.add_edge("router", "entity_resolution")
     graph.add_conditional_edges("entity_resolution", after_resolution,

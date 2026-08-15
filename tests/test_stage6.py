@@ -4,7 +4,8 @@ from langgraph.types import Command
 from graph.builder import build_graph
 from repositories.entity_id_mapping_repository import EntityIdMappingRepository
 from repositories.milvus_entity_repository import MilvusEntityRepository
-from services.embedding_service import DeterministicHybridEmbedding
+from services.embedding_service import DeterministicHybridEmbedding, EmbeddingFactory
+from models.settings import Settings
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -118,3 +119,9 @@ def test_health_reports_stage6_backends():
     payload = TestClient(app).get("/health").json()
     assert payload["stage"] == 6
     assert {"entity_backend", "graph_backend", "embedding_provider"}.issubset(payload)
+
+
+def test_embedding_factory_reuses_provider_in_one_process():
+    EmbeddingFactory.clear_cache()
+    settings = Settings(embedding_provider="mock", embedding_dimension=16)
+    assert EmbeddingFactory.create(settings) is EmbeddingFactory.create(settings)

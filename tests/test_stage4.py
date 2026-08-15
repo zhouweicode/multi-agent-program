@@ -3,7 +3,8 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 from agents.achievement_agent import build_achievement_agent
 from app.main import app
-from models.llm import ModelFactory, MockToolCallingModel
+from models.llm import ModelFactory, MockToolCallingModel, OpenAIStructuredModel
+from models.schemas import RouterOutput
 from models.settings import Settings
 from nodes.supervisor_node import supervisor_node
 
@@ -75,6 +76,31 @@ def test_auto_provider_selects_glm_when_zhipu_key_exists(monkeypatch):
     assert settings.model_provider == "openai"
     assert settings.model_name == "glm-5.2"
     assert settings.model_base_url == "https://open.bigmodel.cn/api/paas/v4/"
+
+
+def test_glm_structured_adapter_uses_json_mode_and_explicit_schema():
+    class BoundModel:
+        def __init__(self, parent):
+            self.parent = parent
+
+        def invoke(self, prompt):
+            self.parent.prompt = prompt
+            return RouterOutput(intent="事实查询", entity_mentions=["张伟"], complexity="simple",
+                                primary_domain="talent", requires_verification=False)
+
+    class RecordingChatModel:
+        def with_structured_output(self, schema, method=None):
+            self.schema = schema
+            self.method = method
+            return BoundModel(self)
+
+    chat_model = RecordingChatModel()
+    result = OpenAIStructuredModel(chat_model).invoke_router("张伟在哪里工作？")
+    assert result.primary_domain == "talent"
+    assert chat_model.schema is RouterOutput
+    assert chat_model.method == "json_mode"
+    assert "只返回一个合法 JSON 对象" in chat_model.prompt
+    assert "JSON Schema" in chat_model.prompt
 
 
 def test_persistent_api_interrupt_resume_state_and_history():
