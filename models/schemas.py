@@ -22,6 +22,8 @@ class PlannedTask(BaseModel):
     task_id: str
     agent: Literal["talent_agent", "achievement_agent", "enterprise_agent", "industry_agent", "graph_reasoning_agent"]
     goal: str
+    required_fact_types: list[str] = Field(default_factory=list, description="完成任务必须返回的业务事实类型")
+    required_entity_ids: list[str] = Field(default_factory=list, description="任务涉及的规范实体 ID")
 
 
 class SupervisorPlan(BaseModel):

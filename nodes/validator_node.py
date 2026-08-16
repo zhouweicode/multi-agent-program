@@ -2,9 +2,10 @@
 import logging
 from graph.state import GraphRAGState
 from models.schemas import ValidationResult
-from services.entity_service import EntityService
 from services.evidence_service import EvidenceService
+from services.resources import get_entity_service
 from services.observability import emit_event
+from models.contracts import AGENT_DOMAINS, DEFAULT_REQUIRED_FACT_TYPES, FACT_TYPE_TO_TOOL
 
 logger = logging.getLogger(__name__)
 
@@ -12,13 +13,11 @@ logger = logging.getLogger(__name__)
 def validator_node(state: GraphRAGState) -> dict:
     errors, missing = [], []
     entity_ids = set(state.get("resolved_entities", {}).values())
-    entity_service, evidence_service = EntityService(), EvidenceService()
+    entity_service, evidence_service = get_entity_service(), EvidenceService()
     for entity_id in entity_ids:
         if not entity_service.exists(entity_id):
             errors.append(f"entity_id 不存在: {entity_id}")
-    agent_domains = {"talent_agent": "talent", "achievement_agent": "achievement", "enterprise_agent": "enterprise",
-                     "industry_agent": "industry", "graph_reasoning_agent": "graph"}
-    expected_domains = ({agent_domains[task["agent"]] for task in state.get("tasks", [])}
+    expected_domains = ({AGENT_DOMAINS[task["agent"]] for task in state.get("tasks", [])}
                         if state.get("complexity") == "complex" else {state.get("primary_domain", "achievement")})
     domain_results = (("talent", state.get("talent_result")), ("achievement", state.get("achievement_result")),
                       ("enterprise", state.get("enterprise_result")), ("industry", state.get("industry_result")),
@@ -28,8 +27,25 @@ def validator_node(state: GraphRAGState) -> dict:
             missing.append(domain)
         elif result and result.get("errors"):
             errors.extend(result["errors"])
+    results_by_agent = {result["agent"]: result for _, result in domain_results if result}
+    for task in state.get("tasks", []):
+        result = results_by_agent.get(task["agent"])
+        if not result:
+            continue
+        returned_tools = {fact.get("tool") for fact in result.get("facts", [])}
+        required_fact_types = task.get("required_fact_types") or DEFAULT_REQUIRED_FACT_TYPES[task["agent"]]
+        missing_facts = [fact_type for fact_type in required_fact_types
+                         if FACT_TYPE_TO_TOOL.get(fact_type) not in returned_tools]
+        expected_entities = set(task.get("required_entity_ids", []))
+        if expected_entities and expected_entities != entity_ids:
+            errors.append(f"任务实体契约不一致: {task['task_id']}")
+        if missing_facts:
+            domain = AGENT_DOMAINS[task["agent"]]
+            errors.append(f"任务验收失败 {task.get('task_id', task['agent'])}：缺少事实类型 {', '.join(missing_facts)}")
+            if domain not in missing:
+                missing.append(domain)
     for item in state.get("evidence", []):
-        if not evidence_service.exists(item["evidence_id"]):
+        if not evidence_service.exists(item["evidence_id"], list(entity_ids)):
             errors.append(f"evidence_id 不存在: {item['evidence_id']}")
     achievement = state.get("achievement_result", {})
     author_papers, common_papers, common_projects, aggregate = None, None, None, None
@@ -69,14 +85,6 @@ def validator_node(state: GraphRAGState) -> dict:
     if achievement and (len(entity_ids) > 1 or bool(used_tools & collaboration_tools)) and (
             common_papers is None or common_projects is None or aggregate is None):
         errors.append("科研合作数据完整性校验失败：缺少共同论文、共同项目或聚合结果")
-    enterprise = state.get("enterprise_result", {})
-    if enterprise and len(entity_ids) > 1:
-        enterprise_tools = {fact["tool"] for fact in enterprise.get("facts", [])}
-        required_enterprise_tools = {"get_person_company_roles", "get_company_projects", "get_company_patents"}
-        if not required_enterprise_tools.issubset(enterprise_tools):
-            errors.append("企业合作数据完整性校验失败：缺少企业角色、企业项目或企业专利结果")
-            if "enterprise" not in missing:
-                missing.append("enterprise")
     graph_result = state.get("graph_result", {})
     for fact in graph_result.get("facts", []):
         if fact["tool"] == "find_path" and fact["data"].get("found"):

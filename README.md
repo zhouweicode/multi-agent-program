@@ -1,6 +1,6 @@
-# 亿级科技知识图谱 Multi-Agent GraphRAG（第六阶段）
+# 亿级科技知识图谱 Multi-Agent GraphRAG（第七阶段）
 
-这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。第五阶段在原有 Multi-Agent、Tool Calling、Replan 和持久化能力上，新增 MySQL 与 Neo4j Repository，并保留 Mock 后端用于离线学习和回归测试。
+这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。第七阶段重点补齐任务验收契约、统一证据服务、后台 Graph Run、SSE 实时轨迹、数据库客户端生命周期和确定性 Answer Formatter。
 
 第六阶段新增统一 canonical entity ID、Dense/Sparse Embedding Provider、Milvus Lite Hybrid Search 和 RRF 实体召回。Shared State 只保存 canonical ID，各数据库内部 ID 只在 Service/Repository 边界转换。
 
@@ -12,11 +12,13 @@
 - `ModelFactory` 根据 `MODEL_PROVIDER` 返回离线 Mock 或真实 OpenAI-Compatible ChatModel，业务代码不绑定具体模型 SDK。
 - Entity Resolution 使用 LangGraph `interrupt()` 暂停，使用同一 `thread_id` 和 `Command(resume=...)` 恢复。
 - Supervisor 根据复杂 Query 生成结构化 `tasks`；LangGraph 按任务列表动态 fan-out，并行运行相关领域 Agent 后在 Merge 汇合。
+- 每个复杂任务携带 `required_fact_types` 与 `required_entity_ids`；Rule Validator 按任务契约验收。
 - Validation 分为两层：Rule Validator 负责确定性校验；VerificationAgent 仅在 `requires_verification=true` 的复杂语义判断中执行。
 - VerificationAgent 使用局部 `SystemMessage/HumanMessage/AIMessage/ToolMessage` 实现真正的多轮 Tool Calling Loop，完整 Messages 不写入全局 State。
 - Supervisor 重规划时读取 `missing_domains`、`missing_evidence` 和 `task_history`，只补调缺失领域，并受 `max_replans` 限制。
-- FastAPI 使用 SQLite Checkpointer，可跨 HTTP 请求、跨进程重启按 `thread_id` 恢复和审计 State。
-- 关键阶段输出 JSON 结构化事件日志，包括 Router、消歧、Planner、Tool、Validation、Verification 和 Answer。
+- FastAPI 使用后台 Run 执行 LangGraph，`POST /queries` 立即返回 `RUNNING`，前端通过 SSE 接收轨迹和终态。
+- `run_id` 与一次执行绑定并禁止复用，避免旧 Checkpoint State 污染新问题。
+- 节点轨迹包含脱敏、限长的输入输出快照，并限制线程数和单线程事件数。
 
 ## 领域能力
 
@@ -34,7 +36,7 @@
 - `MySQLRepository`：只读接入 `gkx.dwd_scholar`、`dwd_scholar_paper_relation` 和 `dwd_scholar_papers`，支持学者检索、单人论文、共同论文。
 - `Neo4jGraphRepository`：只读实现一跳邻居、最短路径、K 跳扩展和路径强度。
 - `EntityService`、`AchievementService`、`GraphService` 负责选择 Repository；Agent 与 Tool Schema 无须感知底层数据库。
-- 三类后端可独立切换，默认均为 `mock`，所以正常测试不要求本机数据库在线。
+- 三类后端可独立切换；当前本地配置默认实体检索为 Milvus，科研成果和图查询仍可保持 Mock。自动化测试强制使用轻量 Mock，不要求数据库在线。
 
 本机开发环境已支持 Milvus Lite。它使用与 Milvus Standalone 相同的 `MilvusClient` API，适合先实现 BGE-M3 Dense/Sparse 与 Hybrid Search：
 
@@ -143,7 +145,7 @@ uvicorn app.main:app --reload
 - 实时查看 Router、Entity Resolution、Supervisor、Domain Agent、Tool、Merge、Validator、Verification 和 Answer 事件；
 - 在检测到同名专家时选择候选 `entity_id`，从 LangGraph interrupt 中断点恢复；
 - 查看最终中文答案、规则校验状态、实体 ID 和完整 `GraphRAGState`；
-- 使用增量事件游标轮询执行轨迹，不把 Agent Messages 写入 Shared State。
+- 使用 SSE 实时接收执行轨迹，不把 Agent Messages 写入 Shared State；彩色节点可查看脱敏后的输入与输出。
 
 前端是 FastAPI 同源静态页面，不需要 Node.js 构建：
 
@@ -174,7 +176,7 @@ export MODEL_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
 
 完整模板见 `.env.example`。项目会从根目录自动读取 `.env`，且系统环境变量优先级更高；`.env` 已被 Git 忽略，不会提交。
 
-## 持久化 API
+## 后台 Run 与持久化 API
 
 启动服务：
 
@@ -186,14 +188,16 @@ uvicorn app.main:app --reload
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| `POST` | `/queries` | 创建查询，可能返回 `NEED_USER_SELECTION` |
-| `POST` | `/queries/{thread_id}/resume` | 提交 `{姓名: entity_id}` 并恢复图 |
-| `GET` | `/queries/{thread_id}` | 查询当前 State 和下一节点 |
-| `GET` | `/queries/{thread_id}/history` | 查询检查点历史 |
-| `GET` | `/queries/{thread_id}/events` | 按增量 cursor 查询实时执行事件 |
+| `POST` | `/queries` | 创建后台 Run，立即返回 `202 RUNNING` |
+| `POST` | `/queries/{run_id}/resume` | 提交 `{姓名: entity_id}`，后台恢复执行 |
+| `GET` | `/queries/{run_id}` | 查询 `RUNNING/NEED_USER_SELECTION/COMPLETED/FAILED` |
+| `GET` | `/queries/{run_id}/stream` | SSE 推送 trace 与终态 |
+| `GET` | `/queries/{run_id}/history` | 查询 SQLite Checkpoint 历史 |
+| `GET` | `/queries/{run_id}/events` | 兼容性增量事件接口 |
 | `GET` | `/health` | 查看阶段、模型后端和 Checkpointer |
 
 默认检查点文件是 `.runtime/checkpoints.sqlite`，已被 `.gitignore` 排除。
+新问题必须使用新的 `run_id`；重复提交相同 ID 返回 `409`。
 
 ## 完整执行流程
 
@@ -287,6 +291,10 @@ Rule Validator 使用普通 Python 校验 entity_id、共同作者/项目参与�
 - Supervisor 只补调缺失领域的最小化 Replan；
 - FastAPI 创建、interrupt、resume、State 和 history；
 - SQLite Checkpointer 的跨请求会话持久化。
+- 后台 Run 状态、SSE 终态和重复 `run_id` 拒绝；
+- Supervisor 任务契约与 Rule Validator 验收；
+- Verification 经 Service/Repository 使用当前数据后端；
+- 节点快照敏感字段脱敏和 Graph path strength 答案。
 
 运行：
 
@@ -296,6 +304,10 @@ pytest -q
 
 当前测试结果以本机 `pytest -q` 输出为准；真实数据库集成采用单独 smoke test，不进入默认 CI。
 
-## 后续阶段建议（尚未实现）
+## 后续阶段建议
 
-下一阶段建议继续接入 MySQL 项目、专利、任职和教育关系，并把当前教学映射迁移到经过数据治理确认的正式 `entity_id_mapping` 表。随后可用真实 BGE-M3 批量重建 Milvus 索引，并增加增量同步与召回质量评测。
+下一阶段建议继续接入 MySQL 项目、专利、任职和教育关系，并把 Enterprise、Industry 与 Verification 的剩余 Mock Repository 替换成真实后端；随后增加鉴权、持久化 Run Registry、取消执行和召回质量评测。
+
+第七阶段运行时和任务契约详解见 [docs/03_stage7_runtime.md](docs/03_stage7_runtime.md)。
+
+当前项目从 API、LangGraph、实体消歧、Agent Tool Calling 到 SSE 返回的完整流程见 [docs/04_current_runtime_flow.md](docs/04_current_runtime_flow.md)。

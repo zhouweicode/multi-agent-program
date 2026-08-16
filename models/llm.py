@@ -7,6 +7,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from models.schemas import RouterOutput, SupervisorPlan, PlannedTask
 from models.settings import Settings
+from models.contracts import DEFAULT_REQUIRED_FACT_TYPES
 
 
 class MockStructuredModel:
@@ -40,12 +41,16 @@ class MockStructuredModel:
         missing_evidence = (verification_result or {}).get("missing_evidence", [])
         is_replan = bool(validation_result or verification_result)
         tasks = [PlannedTask(task_id=f"{'replan' if is_replan else 'task'}_{domain}", agent=agent,
-                             goal=(goal + (f"；重点补充：{'、'.join(missing_evidence)}" if missing_evidence else "")))
+                             goal=(goal + (f"；重点补充：{'、'.join(missing_evidence)}" if missing_evidence else "")),
+                             required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
+                             required_entity_ids=list(resolved_entities.values()))
                  for domain, agent, goal, keywords in specs
                  if (domain in missing_domains or (missing_evidence and domain == "achievement") or
                      (not is_replan and any(word in question for word in keywords)))]
         if not tasks:
-            tasks = [PlannedTask(task_id="task_achievement", agent="achievement_agent", goal="查询专家科研合作")]
+            tasks = [PlannedTask(task_id="task_achievement", agent="achievement_agent", goal="查询专家科研合作",
+                                 required_fact_types=DEFAULT_REQUIRED_FACT_TYPES["achievement_agent"],
+                                 required_entity_ids=list(resolved_entities.values()))]
         reason = "根据缺失领域或证据执行最小化重规划" if is_replan else f"问题涉及 {len(tasks)} 个业务领域，需要并行查询后合并"
         return SupervisorPlan(tasks=tasks, execution_mode="parallel", reason=reason)
 
@@ -114,8 +119,8 @@ class MockVerificationModel:
         context = json.loads(messages[1].content)
         observations = [json.loads(msg.content) for msg in messages if isinstance(msg, ToolMessage)]
         sequence = [
-            ("verify_evidence", {"evidence_ids": context["evidence_ids"]}),
-            ("check_source", {"evidence_ids": context["evidence_ids"]}),
+            ("verify_evidence", {"evidence_ids": context["evidence_ids"], "entity_ids": context["entity_ids"]}),
+            ("check_source", {"evidence_ids": context["evidence_ids"], "entity_ids": context["entity_ids"]}),
             ("get_cooperation_timeline", {"entity_ids": context["entity_ids"]}),
             ("validate_relation", {"entity_ids": context["entity_ids"], "relation": "CORE_RESEARCH_PARTNER"}),
             ("check_constraints", {"timeline": observations[2] if len(observations) > 2 else [],
@@ -219,6 +224,7 @@ class OpenAIStructuredModel:
 企业角色/企业项目/企业专利/产业合作归 enterprise_agent；产业链结构/产业节点/产业事件归 industry_agent；
 只有明确询问路径、多跳、间接关系、邻居或关系强度时才调用 graph_reasoning_agent。
 “综合分析两人的学术、职业和产业合作关系”应并行调用 talent_agent、achievement_agent、enterprise_agent，
-不能因为出现“关系”二字就调用 graph_reasoning_agent。""",
+不能因为出现“关系”二字就调用 graph_reasoning_agent。required_fact_types 表示任务必须返回的业务事实类型，
+required_entity_ids 必须填写本次输入中的 canonical entity ID；Node 会用确定性领域契约再次规范化。""",
             context,
         )

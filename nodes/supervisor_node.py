@@ -3,6 +3,7 @@ import logging
 from graph.state import GraphRAGState
 from models.llm import ModelFactory
 from models.schemas import PlannedTask
+from models.contracts import DEFAULT_REQUIRED_FACT_TYPES
 from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,10 @@ def _guard_complex_plan(question: str, plan, is_replan: bool):
     if not required:
         return plan
     tasks = [PlannedTask(task_id=f"task_{agent.removesuffix('_agent')}", agent=agent,
-                         goal=DOMAIN_TASKS[agent]) for agent in dict.fromkeys(required)]
+                         goal=DOMAIN_TASKS[agent],
+                         required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
+                         required_entity_ids=[])
+             for agent in dict.fromkeys(required)]
     return plan.model_copy(update={"tasks": tasks, "execution_mode": "parallel",
                                    "reason": "根据问题中的明确领域信号校正任务边界并并行执行"})
 
@@ -48,6 +52,14 @@ def supervisor_node(state: GraphRAGState) -> dict:
         state.get("verification_result"), state.get("task_history", []))
     is_replan = bool(state.get("validation_result") or state.get("verification_result"))
     plan = _guard_complex_plan(state["question"], plan, is_replan)
+    entity_ids = list(state.get("resolved_entities", {}).values())
+    normalized_tasks = []
+    for task in plan.tasks:
+        normalized_tasks.append(task.model_copy(update={
+            "required_fact_types": DEFAULT_REQUIRED_FACT_TYPES[task.agent],
+            "required_entity_ids": entity_ids,
+        }))
+    plan = plan.model_copy(update={"tasks": normalized_tasks})
     logger.info("Supervisor: mode=%s tasks=%s", plan.execution_mode, [x.agent for x in plan.tasks])
     emit_event("SUPERVISOR_PLANNED", thread_id=state.get("thread_id"), execution_mode=plan.execution_mode, agents=[x.agent for x in plan.tasks],
                replan_count=state.get("replan_count", 0), reason=plan.reason)

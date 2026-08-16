@@ -38,8 +38,8 @@ def test_verification_agent_executes_five_step_tool_loop():
 
 def test_verification_tools_check_evidence_relation_timeline_and_constraints():
     ids = ["person_zw_001", "person_lm_001"]
-    evidence = verify_evidence.invoke({"evidence_ids": ["ev_paper_001", "missing"]})
-    source = check_source.invoke({"evidence_ids": ["ev_paper_001", "ev_project_001"]})
+    evidence = verify_evidence.invoke({"evidence_ids": ["ev_paper_001", "missing"], "entity_ids": ids})
+    source = check_source.invoke({"evidence_ids": ["ev_paper_001", "ev_project_001"], "entity_ids": ids})
     timeline = get_cooperation_timeline.invoke({"entity_ids": ids})
     relation = validate_relation.invoke({"entity_ids": ids, "relation": "CORE_RESEARCH_PARTNER"})
     constraints = check_constraints.invoke({"timeline": timeline, "min_year_span": 2, "min_achievements": 3})
@@ -76,4 +76,3 @@ def test_replan_routes_respect_max_replans():
     assert after_verification(verification_failure) == "supervisor"
     verification_failure["replan_count"] = 2
     assert after_verification(verification_failure) == "answer"
-

@@ -2,6 +2,7 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.helpers import wait_for_run
 
 
 client = TestClient(app)
@@ -27,7 +28,8 @@ def test_event_api_exposes_query_execution_trace():
         "thread_id": thread_id,
         "max_replans": 2,
     })
-    assert response.status_code == 200
+    assert response.status_code == 202
+    wait_for_run(client, thread_id, {"COMPLETED"})
     events = client.get(f"/queries/{thread_id}/events").json()
     names = [item["event"] for item in events["events"]]
     assert names[0] == "QUERY_STARTED"
@@ -35,7 +37,7 @@ def test_event_api_exposes_query_execution_trace():
     assert "AGENT_TOOL_CALLED" in names
     assert "RULE_VALIDATION_COMPLETED" in names
     assert "ANSWER_GENERATED" in names
-    assert names[-1] == "NODE_EXECUTED"
+    assert names[-1] == "RUN_STATUS_CHANGED"
     node_events = [item for item in events["events"] if item["event"] == "NODE_EXECUTED"]
     assert {item["node_name"] for item in node_events} == {
         "router", "entity_resolution", "industry_agent", "merge", "validator", "answer"
@@ -46,6 +48,7 @@ def test_event_api_exposes_query_execution_trace():
 def test_event_api_supports_incremental_cursor():
     thread_id = "frontend-event-cursor"
     client.post("/queries", json={"question": "查询人工智能产业链TOP事件。", "thread_id": thread_id})
+    wait_for_run(client, thread_id, {"COMPLETED"})
     first = client.get(f"/queries/{thread_id}/events").json()
     cursor = first["events"][1]["sequence"]
     later = client.get(f"/queries/{thread_id}/events?after={cursor}").json()
@@ -56,15 +59,28 @@ def test_event_api_supports_incremental_cursor():
 def test_entity_resolution_trace_records_interrupt_and_resumed_output():
     thread_id = "frontend-node-interrupt-detail"
     created = client.post("/queries", json={"question": "张伟发表过哪些论文？", "thread_id": thread_id})
-    assert created.json()["status"] == "NEED_USER_SELECTION"
+    assert created.status_code == 202
+    waiting = wait_for_run(client, thread_id, {"NEED_USER_SELECTION"})
+    assert waiting["status"] == "NEED_USER_SELECTION"
     before_resume = client.get(f"/queries/{thread_id}/events").json()["events"]
     interrupted = [item for item in before_resume if item["event"] == "NODE_INTERRUPTED"]
     assert interrupted[-1]["node_name"] == "entity_resolution"
     assert interrupted[-1]["node_input"]["entity_mentions"] == ["张伟"]
 
     resumed = client.post(f"/queries/{thread_id}/resume", json={"selections": {"张伟": "person_zw_001"}})
-    assert resumed.json()["status"] == "COMPLETED"
+    assert resumed.status_code == 202
+    assert wait_for_run(client, thread_id, {"COMPLETED"})["status"] == "COMPLETED"
     after_resume = client.get(f"/queries/{thread_id}/events").json()["events"]
     completed = [item for item in after_resume
                  if item["event"] == "NODE_EXECUTED" and item["node_name"] == "entity_resolution"]
     assert completed[-1]["node_output"]["resolved_entities"] == {"张伟": "person_zw_001"}
+
+
+def test_sse_stream_contains_trace_and_terminal_status():
+    run_id = "frontend-sse-stream"
+    client.post("/queries", json={"question": "查询人工智能产业链TOP事件。", "thread_id": run_id})
+    wait_for_run(client, run_id, {"COMPLETED"})
+    response = client.get(f"/queries/{run_id}/stream")
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: trace" in response.text
+    assert "event: status" in response.text

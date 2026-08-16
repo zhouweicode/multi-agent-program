@@ -2,14 +2,12 @@
 import logging
 from langgraph.types import interrupt
 from graph.state import GraphRAGState
-from services.entity_service import EntityService
+from services.resources import get_entity_service
 from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
-service = EntityService()
-
-
 def entity_resolution_node(state: GraphRAGState) -> dict:
+    service = get_entity_service()
     candidates, resolved, ambiguous = {}, dict(state.get("resolved_entities", {})), {}
     for mention in state.get("entity_mentions", []):
         if mention in resolved:

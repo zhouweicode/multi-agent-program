@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { threadId: null, cursor: 0, events: [], poller: null, polling: false, pollStartedAt: 0, graphState: {} };
+const state = { threadId: null, cursor: 0, events: [], eventSource: null, streaming: false, graphState: {} };
 
 const eventInfo = {
   QUERY_STARTED: ["query", "查询已进入 LangGraph"], ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
@@ -10,7 +10,7 @@ const eventInfo = {
   VERIFICATION_COMPLETED: ["verification", "Verification Agent 判断完成"], ANSWER_GENERATED: ["answer", "最终答案已生成"],
   QUERY_RESUMED: ["entity", "从实体消歧中断点恢复"], QUERY_FAILED: ["answer", "查询执行失败"],
   NODE_EXECUTED: [null, "LangGraph Node 执行完成"], NODE_INTERRUPTED: [null, "LangGraph Node 已中断"],
-  NODE_FAILED: [null, "LangGraph Node 执行失败"]
+  NODE_FAILED: [null, "LangGraph Node 执行失败"], RUN_STATUS_CHANGED: [null, "Graph Run 状态已更新"]
 };
 
 const nodeLabels = {
@@ -24,6 +24,7 @@ const nodeLabels = {
 function newThreadId() { return `ui-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
 function setRunStatus(text, running = false) { const el = $("#runStatus"); el.textContent = text; el.classList.toggle("running", running); }
 function resetUI() {
+  stopEventStream();
   state.cursor = 0; state.events = []; state.graphState = {};
   $("#workspace").classList.remove("hidden"); $("#selectionPanel").classList.add("hidden"); $("#answerPanel").classList.add("hidden");
   $("#timeline").innerHTML = '<div class="empty-state"><span class="pulse-ring"></span>等待执行事件…</div>';
@@ -82,37 +83,41 @@ function showEventDetail(event, label) {
   modal.showModal();
 }
 
-async function pollEvents() {
-  if (!state.threadId) return;
-  try {
-    const response = await fetch(`/queries/${encodeURIComponent(state.threadId)}/events?after=${state.cursor}`);
-    if (!response.ok) return;
-    const payload = await response.json(); state.cursor = payload.cursor;
-    payload.events.forEach(event => { state.events.push(event); renderEvent(event); });
-  } catch (_) { /* 下一轮继续 */ }
-}
-function stopPolling() {
-  state.polling = false;
-  clearTimeout(state.poller);
-  state.poller = null;
+function stopEventStream() {
+  state.streaming = false;
+  if (state.eventSource) state.eventSource.close();
+  state.eventSource = null;
 }
 
-function startPolling() {
-  stopPolling();
-  state.polling = true;
-  state.pollStartedAt = Date.now();
-  const tick = async () => {
-    if (!state.polling) return;
-    await pollEvents();
-    if (!state.polling) return;
-    if (Date.now() - state.pollStartedAt >= 180000) {
-      stopPolling();
-      setRunStatus("执行超时");
-      return;
+function startEventStream() {
+  stopEventStream();
+  state.streaming = true;
+  const source = new EventSource(`/queries/${encodeURIComponent(state.threadId)}/stream?after=${state.cursor}`);
+  state.eventSource = source;
+  source.addEventListener("trace", message => {
+    const event = JSON.parse(message.data);
+    if (event.sequence <= state.cursor) return;
+    state.cursor = event.sequence;
+    state.events.push(event);
+    renderEvent(event);
+  });
+  source.addEventListener("status", message => {
+    const payload = JSON.parse(message.data);
+    stopEventStream();
+    if (payload.status === "NEED_USER_SELECTION") {
+      showCandidates(payload.interrupt);
+      setRunStatus("等待实体选择");
+    } else if (payload.status === "COMPLETED") {
+      renderResult(payload);
+    } else {
+      setRunStatus("执行失败");
+      alert(`执行失败：${payload.error?.message || "未知错误"}`);
     }
-    state.poller = setTimeout(tick, 1500);
+  });
+  source.onerror = () => {
+    source.close();
+    if (state.streaming) setTimeout(startEventStream, 1000);
   };
-  tick();
 }
 
 function showCandidates(interrupt) {
@@ -146,25 +151,27 @@ function renderResult(payload) {
 
 async function handleResponse(response) {
   if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.detail || `HTTP ${response.status}`); }
-  const payload = await response.json(); await pollEvents();
-  if (payload.status === "NEED_USER_SELECTION") { showCandidates(payload.interrupt); setRunStatus("等待实体选择"); }
-  else { renderResult(payload); stopPolling(); }
+  const payload = await response.json();
+  state.threadId = payload.run_id || payload.thread_id || state.threadId;
+  if (payload.status === "RUNNING") { setRunStatus("执行中", true); startEventStream(); }
+  else if (payload.status === "NEED_USER_SELECTION") { showCandidates(payload.interrupt); setRunStatus("等待实体选择"); }
+  else { renderResult(payload); stopEventStream(); }
 }
 
 $("#queryForm").addEventListener("submit", async event => {
-  event.preventDefault(); resetUI(); state.threadId = newThreadId(); startPolling();
+  event.preventDefault(); resetUI(); state.threadId = newThreadId();
   const button = $("#submitBtn"); button.disabled = true;
   try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value)})}); await handleResponse(response); }
-  catch (error) { setRunStatus("执行失败"); alert(`执行失败：${error.message}`); stopPolling(); }
+  catch (error) { setRunStatus("执行失败"); alert(`执行失败：${error.message}`); stopEventStream(); }
   finally { button.disabled = false; }
 });
 
 $("#selectionForm").addEventListener("submit", async event => {
   event.preventDefault(); const selections = {};
   document.querySelectorAll('#candidateGroups input[type="radio"]:checked').forEach(input => { selections[input.dataset.mention] = input.value; });
-  $("#selectionPanel").classList.add("hidden"); setRunStatus("恢复执行中", true); startPolling();
+  $("#selectionPanel").classList.add("hidden"); setRunStatus("恢复执行中", true);
   try { const response = await fetch(`/queries/${encodeURIComponent(state.threadId)}/resume`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({selections})}); await handleResponse(response); }
-  catch (error) { setRunStatus("恢复失败"); alert(`恢复失败：${error.message}`); stopPolling(); }
+  catch (error) { setRunStatus("恢复失败"); alert(`恢复失败：${error.message}`); stopEventStream(); }
 });
 
 document.querySelectorAll("[data-example]").forEach(button => button.addEventListener("click", () => { $("#question").value = button.dataset.example; $("#question").focus(); }));

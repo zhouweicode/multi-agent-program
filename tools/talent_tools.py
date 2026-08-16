@@ -1,14 +1,12 @@
 """人才机构 Agent 独享工具。"""
 from langchain_core.tools import tool
-from services.entity_service import EntityService
-
-_entities = EntityService()
+from services.resources import get_entity_service
 
 
 @tool
 def get_person_profile(entity_id: str) -> dict:
     """按唯一实体 ID 查询专家画像。"""
-    return _entities.get(entity_id) or {"error": "PERSON_NOT_FOUND", "entity_id": entity_id}
+    return get_entity_service().get(entity_id) or {"error": "PERSON_NOT_FOUND", "entity_id": entity_id}
 
 
 @tool

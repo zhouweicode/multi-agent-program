@@ -13,3 +13,10 @@ def build_sqlite_checkpointer(path: str | None = None) -> SqliteSaver:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     _connection = sqlite3.connect(db_path, check_same_thread=False)
     return SqliteSaver(_connection)
+
+
+def close_sqlite_checkpointer() -> None:
+    global _connection
+    if _connection is not None:
+        _connection.close()
+        _connection = None

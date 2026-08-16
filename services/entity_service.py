@@ -40,3 +40,8 @@ class EntityService:
             row = self.repository.get_scholar(backend_id)
             return self.mapping.normalize_candidate(row, self.backend) if row and self.backend == "mysql" else row
         return next((x.copy() for x in MOCK_ENTITIES if x["entity_id"] == entity_id), None)
+
+    def close(self) -> None:
+        close = getattr(self.repository, "close", None)
+        if close:
+            close()

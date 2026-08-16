@@ -7,6 +7,7 @@ from models.llm import ModelFactory, MockToolCallingModel, OpenAIStructuredModel
 from models.schemas import RouterOutput
 from models.settings import Settings
 from nodes.supervisor_node import supervisor_node
+from tests.helpers import wait_for_run
 
 
 def test_domain_agent_uses_multi_round_toolmessage_loop():
@@ -111,18 +112,27 @@ def test_persistent_api_interrupt_resume_state_and_history():
         "thread_id": thread_id,
         "max_replans": 2,
     })
-    assert created.status_code == 200
-    assert created.json()["status"] == "NEED_USER_SELECTION"
+    assert created.status_code == 202
+    assert wait_for_run(client, thread_id, {"NEED_USER_SELECTION"})["status"] == "NEED_USER_SELECTION"
     resumed = client.post(f"/queries/{thread_id}/resume", json={"selections": {"张伟": "person_zw_001"}})
-    assert resumed.status_code == 200
-    assert resumed.json()["status"] == "COMPLETED"
-    assert resumed.json()["state"]["validation_result"]["valid"] is True
+    assert resumed.status_code == 202
+    completed = wait_for_run(client, thread_id, {"COMPLETED"})
+    assert completed["state"]["validation_result"]["valid"] is True
     current = client.get(f"/queries/{thread_id}")
     assert current.status_code == 200
     assert current.json()["state"]["resolved_entities"]["张伟"] == "person_zw_001"
     history = client.get(f"/queries/{thread_id}/history?limit=50")
     assert history.status_code == 200
     assert len(history.json()["history"]) >= 2
+
+
+def test_api_rejects_reusing_existing_run_id():
+    client = TestClient(app)
+    run_id = "stage7-no-thread-reuse"
+    first = client.post("/queries", json={"question": "查询产业链事件", "thread_id": run_id})
+    assert first.status_code == 202
+    second = client.post("/queries", json={"question": "另一个问题", "thread_id": run_id})
+    assert second.status_code == 409
 
 
 def test_api_unknown_thread_returns_404():

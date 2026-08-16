@@ -40,6 +40,11 @@ class GraphService:
             return self.repository.health()
         return {"backend": "mock", "ready": True}
 
+    def close(self) -> None:
+        close = getattr(self.repository, "close", None)
+        if close:
+            close()
+
     @staticmethod
     def _neighbors(entity_id: str) -> list[tuple[str, dict]]:
         rows = []

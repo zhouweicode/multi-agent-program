@@ -5,10 +5,13 @@ from services.observability import emit_event
 
 
 def verification_agent_node(state: GraphRAGState) -> dict:
+    research_tools = {"get_author_papers", "get_common_papers", "get_common_projects", "aggregate_cooperation"}
+    evidence_ids = [item["evidence_id"] for item in state.get("evidence", [])
+                    if item.get("source_tool") in research_tools]
     result = build_verification_agent().run(
         question=state["question"],
         entity_ids=list(state.get("resolved_entities", {}).values()),
-        evidence_ids=[item["evidence_id"] for item in state.get("evidence", [])],
+        evidence_ids=evidence_ids,
     )
     history = list(state.get("task_history", []))
     history.append({"agent": "verification_agent", "status": result["status"]})

@@ -19,6 +19,8 @@ def test_comprehensive_cooperation_query_returns_business_conclusion():
     assert [task["agent"] for task in final["tasks"]] == [
         "talent_agent", "achievement_agent", "enterprise_agent"
     ]
+    assert all(task["required_fact_types"] for task in final["tasks"])
+    assert all(task["required_entity_ids"] == ["person_zw_001", "person_lm_001"] for task in final["tasks"])
     assert final.get("graph_result") is None
     assert final.get("industry_result") is None
     answer = final["final_answer"]
