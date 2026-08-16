@@ -13,12 +13,19 @@ def test_frontend_index_and_assets_are_served():
     assert page.status_code == 200
     assert "GraphRAG Studio" in page.text
     assert "NODE INSPECTOR" in page.text
+    assert 'id="submitLabel"' in page.text
+    assert "专利成果" in page.text
+    assert "教育经历" in page.text
+    assert "间接关系" in page.text
     assert client.get("/static/styles.css").status_code == 200
     layout_css = client.get("/static/layout-fix.css")
     assert layout_css.status_code == 200
     assert "overflow-wrap: anywhere" in layout_css.text
     assert "grid-column: 1 / -1" in layout_css.text
-    assert client.get("/static/app.js").status_code == 200
+    script = client.get("/static/app.js")
+    assert script.status_code == 200
+    assert "停止分析" in script.text
+    assert "/cancel" in script.text
 
 
 def test_event_api_exposes_query_execution_trace():

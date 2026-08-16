@@ -26,3 +26,15 @@ def aggregate_cooperation(entity_ids: list[str]) -> dict:
 def get_common_projects(entity_ids: list[str]) -> list[dict]:
     """查询两位或多位专家共同参与的科研项目。"""
     return get_achievement_service().get_common_projects(entity_ids)
+
+
+@tool
+def get_person_patents(entity_id: str) -> list[dict]:
+    """查询专家作为发明人的专利。"""
+    return get_achievement_service().get_person_patents(entity_id)
+
+
+@tool
+def get_common_patents(entity_ids: list[str]) -> list[dict]:
+    """查询两位或多位专家共同发明的专利。"""
+    return get_achievement_service().get_common_patents(entity_ids)

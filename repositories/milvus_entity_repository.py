@@ -54,6 +54,10 @@ class MilvusEntityRepository:
         result = self.client.query(self.collection, filter="", output_fields=["count(*)"])
         return int(result[0]["count(*)"]) if result else 0
 
+    def health(self) -> dict:
+        return {"backend": "milvus", "ready": self.client.has_collection(self.collection),
+                "collection": self.collection, "entity_count": self.count()}
+
     def upsert_entities(self, entities: list[dict]) -> int:
         if not entities:
             return 0

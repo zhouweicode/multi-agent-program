@@ -14,6 +14,8 @@ class GraphRAGState(TypedDict, total=False):
     entity_backend_ids: dict[str, dict[str, str]]
     entity_candidates: dict[str, list[dict[str, Any]]]
     awaiting_user_selection: bool
+    entity_resolution_status: str
+    unresolved_mentions: list[str]
     plan: dict[str, Any]
     tasks: list[dict[str, Any]]
     task_history: list[dict[str, Any]]

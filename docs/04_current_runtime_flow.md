@@ -1,6 +1,6 @@
 # 当前项目完整运行流程
 
-本文说明当前第七阶段代码中，一个问题从前端进入系统、经过 LangGraph、领域 Agent、校验和回答生成，最后通过 SSE 返回页面的完整过程。内容以当前代码为准，不是通用 LangGraph 教程。
+本文说明当前第九阶段代码中，一个问题从前端进入系统、经过 LangGraph、领域 Agent、统一证据归一、校验和回答生成，最后通过 SSE 返回页面的完整过程。内容以当前代码为准，不是通用 LangGraph 教程。
 
 ## 1. 总体流程
 
@@ -114,8 +114,8 @@ Router 不绑定业务 Tool，不执行论文、任职或图查询，因此它�
 
 `router → entity_resolution` 是固定边。`nodes/entity_resolution_node.py::entity_resolution_node()` 使用进程内复用的 `EntityService` 检索每个 mention。
 
-- 无候选：暂不写入 `resolved_entities`，后续 Validator 会识别缺失；
-- 唯一候选：自动写入 `{名称: entity_id}`；
+- 无候选：触发 `ENTITY_NOT_FOUND`，停止无意义的领域查询；
+- 唯一 MySQL 精确候选，或 Top1 达到阈值且与 Top2 分差足够：自动写入 `{名称: entity_id}`；
 - 多个候选：调用 LangGraph `interrupt()`。
 
 中断值示例：

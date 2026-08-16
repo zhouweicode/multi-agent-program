@@ -39,6 +39,8 @@ def answer_node(state: GraphRAGState) -> dict:
                      if signals else "\n综合结论：现有返回证据不足以确认两人存在明确合作。")
     else:
         synthesis = "\n综合结论：以上为当前实体在知识图谱中已返回并通过校验的事实。"
-    answer = f"基于当前知识图谱返回并通过规则校验的数据，{names or '当前查询实体'} 的分析如下：\n{numbered}{synthesis}{semantic}\n以上结论未使用知识图谱之外的事实。"
+    evidence_ids = list(dict.fromkeys(item.get("evidence_id") for item in state.get("evidence", []) if item.get("evidence_id")))
+    citations = ("\n证据编号：" + "、".join(evidence_ids[:20]) + ("（仅展示前 20 条）" if len(evidence_ids) > 20 else "")) if evidence_ids else ""
+    answer = f"基于当前知识图谱返回并通过规则校验的数据，{names or '当前查询实体'} 的分析如下：\n{numbered}{synthesis}{semantic}{citations}\n以上结论未使用知识图谱之外的事实。"
     emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="PASS", has_verification=bool(verification))
     return {"final_answer": answer}

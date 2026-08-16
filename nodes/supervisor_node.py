@@ -3,7 +3,7 @@ import logging
 from graph.state import GraphRAGState
 from models.llm import ModelFactory
 from models.schemas import PlannedTask
-from models.contracts import DEFAULT_REQUIRED_FACT_TYPES
+from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
 from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ def supervisor_node(state: GraphRAGState) -> dict:
     normalized_tasks = []
     for task in plan.tasks:
         normalized_tasks.append(task.model_copy(update={
-            "required_fact_types": DEFAULT_REQUIRED_FACT_TYPES[task.agent],
+            "required_fact_types": required_fact_types(task.agent, state["question"]),
             "required_entity_ids": entity_ids,
         }))
     plan = plan.model_copy(update={"tasks": normalized_tasks})

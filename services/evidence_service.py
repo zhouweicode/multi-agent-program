@@ -1,19 +1,21 @@
 """统一证据服务；Verification 不直接依赖 Mock 常量或具体数据库。"""
 from services.achievement_service import AchievementService
-from services.resources import get_achievement_service
+from repositories.evidence_repository import EvidenceRepository
 
 
 class EvidenceService:
     def __init__(self, achievement_service: AchievementService | None = None):
-        self.achievements = achievement_service or get_achievement_service()
+        if achievement_service is None:
+            from services.resources import get_achievement_service
+            achievement_service = get_achievement_service()
+        self.achievements = achievement_service
+        self.repository = EvidenceRepository(self.achievements)
 
     def cooperation_rows(self, entity_ids: list[str]) -> list[dict]:
         """从 AchievementService 当前后端获取同一批科研合作证据。"""
-        papers = [{**row, "evidence_type": "paper", "source": row.get("source", "mock:papers")}
-                  for row in self.achievements.get_common_papers(entity_ids)]
-        projects = [{**row, "evidence_type": "project", "source": row.get("source", "mock:projects")}
-                    for row in self.achievements.get_common_projects(entity_ids)]
-        return papers + projects
+        return [record["payload"] | {"evidence_type": record["evidence_type"], "source": record["source"]}
+                for record in self.repository.list_for_entities(entity_ids)
+                if record["evidence_type"] in {"paper", "project"}]
 
     def _available(self, entity_ids: list[str] | None = None) -> dict[str, dict]:
         rows = self.cooperation_rows(entity_ids) if entity_ids else []
@@ -53,8 +55,10 @@ class EvidenceService:
         return sorted(rows, key=lambda row: row["year"])
 
     def exists(self, evidence_id: str, entity_ids: list[str] | None = None) -> bool:
-        non_research_prefixes = ("ev_employment_", "ev_role_", "ev_company_", "ev_event_", "ev_graph_")
-        return evidence_id in self._available(entity_ids) or evidence_id.startswith(non_research_prefixes)
+        return self.repository.exists(evidence_id, entity_ids)
 
     def get(self, evidence_id: str, entity_ids: list[str] | None = None) -> dict | None:
-        return self._available(entity_ids).get(evidence_id)
+        return self.repository.get(evidence_id, entity_ids)
+
+    def get_batch(self, evidence_ids: list[str], entity_ids: list[str] | None = None) -> list[dict]:
+        return self.repository.get_batch(evidence_ids, entity_ids)

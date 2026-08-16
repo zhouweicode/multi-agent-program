@@ -115,9 +115,9 @@ def test_entity_resolution_writes_canonical_and_backend_ids_to_state():
     assert final["entity_backend_ids"]["张伟"]["neo4j"] == "SCH001"
 
 
-def test_health_reports_stage7_backends():
+def test_health_reports_stage9_backends():
     payload = TestClient(app).get("/health").json()
-    assert payload["stage"] == 7
+    assert payload["stage"] == 9
     assert {"entity_backend", "graph_backend", "embedding_provider"}.issubset(payload)
 
 

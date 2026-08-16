@@ -6,7 +6,7 @@ from services.observability import emit_event
 def merge_node(state: GraphRAGState) -> dict:
     results = [state.get(field) for field in ("talent_result", "achievement_result", "enterprise_result",
                                                "industry_result", "graph_result")]
-    evidence_map = {(item["evidence_id"], item.get("source_tool")): item
+    evidence_map = {item["evidence_id"]: item
                     for result in results if result for item in result.get("evidence", [])}
     evidence = list(evidence_map.values())
     history = list(state.get("task_history", []))

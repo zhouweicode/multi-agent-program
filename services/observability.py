@@ -11,6 +11,7 @@ from threading import Lock
 from typing import Any, Iterator
 
 from langgraph.errors import GraphInterrupt
+from services.run_control import raise_if_stopped
 
 logger = logging.getLogger("graphrag.events")
 _event_lock = Lock()
@@ -79,7 +80,9 @@ def traced_node(node_name: str, node):
         node_input = serializable_snapshot(state)
         thread_id = state.get("thread_id")
         try:
+            raise_if_stopped(thread_id)
             output = node(state)
+            raise_if_stopped(thread_id)
         except GraphInterrupt:
             emit_event("NODE_INTERRUPTED", thread_id=thread_id, node_name=node_name,
                        node_input=node_input, node_output={"status": "INTERRUPTED"})

@@ -1,6 +1,6 @@
-# 亿级科技知识图谱 Multi-Agent GraphRAG（第七阶段）
+# 亿级科技知识图谱 Multi-Agent GraphRAG（第九阶段）
 
-这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。第七阶段重点补齐任务验收契约、统一证据服务、后台 Graph Run、SSE 实时轨迹、数据库客户端生命周期和确定性 Answer Formatter。
+这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。第九阶段新增统一 EvidenceRecord、Neo4j 企业/产业 Repository、共享数据库 Client、真实依赖健康探针、MySQL→Neo4j 同步工具和端到端质量评测。
 
 第六阶段新增统一 canonical entity ID、Dense/Sparse Embedding Provider、Milvus Lite Hybrid Search 和 RRF 实体召回。Shared State 只保存 canonical ID，各数据库内部 ID 只在 Service/Repository 边界转换。
 
@@ -19,13 +19,17 @@
 - FastAPI 使用后台 Run 执行 LangGraph，`POST /queries` 立即返回 `RUNNING`，前端通过 SSE 接收轨迹和终态。
 - `run_id` 与一次执行绑定并禁止复用，避免旧 Checkpoint State 污染新问题。
 - 节点轨迹包含脱敏、限长的输入输出快照，并限制线程数和单线程事件数。
+- Entity Resolution 支持 `hybrid`：MySQL 权威精确召回、BGE-M3 + Milvus 语义补召回、上下文重排和置信阈值。
+- 后台 Run 状态、interrupt、错误和耗时持久化到独立 SQLite Registry，并支持取消和超时。
+- Tool Observation 在写入 Shared State 前转换为统一证据记录，最终答案可展示证据编号。
+- 企业和产业领域可独立切换到 Neo4j，并复用 GraphService 的同一 Driver。
 
 ## 领域能力
 
-| Agent | 当前 Mock Tools |
+| Agent | Tools 与可切换后端 |
 |---|---|
-| TalentOrganizationAgent | `get_person_profile`、`get_employment_history`、`match_employment_overlap` |
-| ResearchAchievementAgent | `get_author_papers`、`get_common_papers`、`aggregate_cooperation` |
+| TalentOrganizationAgent | `get_person_profile`、`get_employment_history`、`get_education_history`、`match_employment_overlap` |
+| ResearchAchievementAgent | `get_author_papers`、`get_common_papers`、`get_common_projects`、`get_person_patents`、`get_common_patents`、`aggregate_cooperation` |
 | EnterpriseRelationAgent | `get_person_company_roles`、`get_company_projects`、`get_company_patents` |
 | IndustryChainAgent | `get_chain_structure`、`get_node_companies`、`get_node_events`、`rank_top_events` |
 | GraphReasoningAgent | `get_neighbors`、`find_path`、`k_hop_expand`、`calculate_path_strength` |
@@ -33,7 +37,7 @@
 
 ## 第五阶段数据仓储
 
-- `MySQLRepository`：只读接入 `gkx.dwd_scholar`、`dwd_scholar_paper_relation` 和 `dwd_scholar_papers`，支持学者检索、单人论文、共同论文。
+- `MySQLRepository`：只读接入 `gkx.dwd_scholar`、论文、项目和专利表，支持学者、任职、教育、单人/共同论文、共同项目及单人/共同专利查询。
 - `Neo4jGraphRepository`：只读实现一跳邻居、最短路径、K 跳扩展和路径强度。
 - `EntityService`、`AchievementService`、`GraphService` 负责选择 Repository；Agent 与 Tool Schema 无须感知底层数据库。
 - 三类后端可独立切换；当前本地配置默认实体检索为 Milvus，科研成果和图查询仍可保持 Mock。自动化测试强制使用轻量 Mock，不要求数据库在线。
@@ -50,17 +54,19 @@ Milvus Lite 数据文件应放在已忽略的 `.runtime/` 中，不提交到 Git
 
 项目使用 `GRAPHRAG_MILVUS_URI`，不要用 `MILVUS_URI` 表示 Lite 文件路径，因为后者会被 `pymilvus` SDK 自己读取并按 HTTP 地址解析。
 
-## 第六阶段实体检索
+## 第八阶段混合实体检索
 
 ```mermaid
 flowchart LR
-    Q[Entity Mention] --> E[Embedding Provider]
+    Q[Entity Mention + Query Context] --> SQL[MySQL 精确召回]
+    Q --> E[Embedding Provider]
     E --> D[Dense Vector]
     E --> S[Sparse Vector]
     D --> MH[Milvus Hybrid Search]
     S --> MH
     MH --> RRF[RRF Fusion k=60]
-    RRF --> C[Top-K Candidates]
+    RRF --> C[候选融合与可解释重排]
+    SQL --> C
     C --> ER[Entity Resolution Node]
     ER -->|唯一| CID[Canonical entity_id]
     ER -->|重名| UI[NEED_USER_SELECTION]
@@ -69,11 +75,36 @@ flowchart LR
     MAP --> NEO[Neo4j scholar_id]
 ```
 
-项目当前默认使用 `ENTITY_BACKEND=milvus` 和真实 BGE-M3；确定性 Mock 仅用于自动化测试和离线回退：
+## 第九阶段真实数据与统一证据
+
+领域后端可以独立切换：
+
+```env
+ENTITY_BACKEND=hybrid
+ACHIEVEMENT_BACKEND=mysql
+GRAPH_BACKEND=neo4j
+ENTERPRISE_BACKEND=neo4j
+INDUSTRY_BACKEND=neo4j
+```
+
+统一证据结构包含 `evidence_id`、`fact_type`、`source_type`、`source_name`、
+`source_record_id`、`entity_ids`、`event_time`、`content` 和 `source_tool`。Merge Node 按
+`evidence_id` 去重，Rule Validator 校验证据结构，Answer Node 展示实际引用编号。
+
+MySQL 到 Neo4j 同步默认只预览，必须显式增加 `--apply` 才写入：
+
+```bash
+python -m scripts.sync_neo4j_research_graph --limit 100
+python -m scripts.sync_neo4j_research_graph --limit 100 --batch-id stage9-001 --apply
+```
+
+同步使用 `MERGE` 保证同一学者、论文及 `AUTHOR_OF` 关系可重复执行。
+
+配置 `ENTITY_BACKEND=hybrid` 后启用 MySQL + Milvus 双路召回；确定性 Mock 仅用于自动化测试：
 
 ```bash
 export EMBEDDING_PROVIDER=bge_m3
-export ENTITY_BACKEND=milvus
+export ENTITY_BACKEND=hybrid
 export HF_HOME=.runtime/huggingface
 export EMBEDDING_CACHE_DIR=.runtime/huggingface
 export GRAPHRAG_MILVUS_URI=.runtime/milvus-bge-m3.db
@@ -190,11 +221,14 @@ uvicorn app.main:app --reload
 |---|---|---|
 | `POST` | `/queries` | 创建后台 Run，立即返回 `202 RUNNING` |
 | `POST` | `/queries/{run_id}/resume` | 提交 `{姓名: entity_id}`，后台恢复执行 |
-| `GET` | `/queries/{run_id}` | 查询 `RUNNING/NEED_USER_SELECTION/COMPLETED/FAILED` |
+| `POST` | `/queries/{run_id}/cancel` | 协作式取消后台 Run |
+| `GET` | `/queries/{run_id}` | 查询运行状态，包括 `ENTITY_NOT_FOUND/CANCELLED/TIMED_OUT` |
 | `GET` | `/queries/{run_id}/stream` | SSE 推送 trace 与终态 |
 | `GET` | `/queries/{run_id}/history` | 查询 SQLite Checkpoint 历史 |
 | `GET` | `/queries/{run_id}/events` | 兼容性增量事件接口 |
 | `GET` | `/health` | 查看阶段、模型后端和 Checkpointer |
+| `GET` | `/health/dependencies` | 主动探测当前启用的 MySQL、Milvus、Neo4j 或 Mock 后端 |
+| `GET` | `/metrics` | 查看无敏感数据的运行状态与耗时摘要 |
 
 默认检查点文件是 `.runtime/checkpoints.sqlite`，已被 `.gitignore` 排除。
 新问题必须使用新的 `run_id`；重复提交相同 ID 返回 `409`。
@@ -217,7 +251,6 @@ flowchart TD
     S --> P[Structured Tasks]
     P -->|dynamic parallel fan-out| TA
     P -->|dynamic parallel fan-out| AA
-    P -->|dynamic parallel fan-out| EA
     P -->|dynamic parallel fan-out| IA
     P -->|dynamic parallel fan-out| GA
     TA --> M[Merge Node]
@@ -295,19 +328,31 @@ Rule Validator 使用普通 Python 校验 entity_id、共同作者/项目参与�
 - Supervisor 任务契约与 Rule Validator 验收；
 - Verification 经 Service/Repository 使用当前数据后端；
 - 节点快照敏感字段脱敏和 Graph path strength 答案。
+- MySQL + Milvus 候选融合、上下文重排和自动确认阈值；
+- 持久化 Run Registry、协作式超时以及统一 Evidence Repository。
+- MySQL 任职、教育、项目和专利参数化查询，以及专利/教育端到端回答。
+- 统一 EvidenceRecord、Neo4j 企业/产业 Service 适配和依赖健康探针；
+- 可重复的 MySQL→Neo4j 同步预览/写入流程；
+- 路由、工具、答案、校验和证据覆盖端到端评测。
 
 运行：
 
 ```bash
 pytest -q
+python -m scripts.evaluate_stage9_e2e
 ```
 
 当前测试结果以本机 `pytest -q` 输出为准；真实数据库集成采用单独 smoke test，不进入默认 CI。
 
 ## 后续阶段建议
 
-下一阶段建议继续接入 MySQL 项目、专利、任职和教育关系，并把 Enterprise、Industry 与 Verification 的剩余 Mock Repository 替换成真实后端；随后增加鉴权、持久化 Run Registry、取消执行和召回质量评测。
+第十阶段建议增加 API 鉴权、Redis/Celery 或同类跨进程任务队列、OpenTelemetry 链路追踪，
+并用人工标注的真实问题集校准实体消歧阈值和回答准确率。
 
 第七阶段运行时和任务契约详解见 [docs/03_stage7_runtime.md](docs/03_stage7_runtime.md)。
 
 当前项目从 API、LangGraph、实体消歧、Agent Tool Calling 到 SSE 返回的完整流程见 [docs/04_current_runtime_flow.md](docs/04_current_runtime_flow.md)。
+
+第八阶段混合实体解析、统一证据与 Run 治理见 [docs/05_stage8_hybrid_resolution.md](docs/05_stage8_hybrid_resolution.md)。
+
+第九阶段真实数据、统一证据和评测见 [docs/06_stage9_real_data_and_evaluation.md](docs/06_stage9_real_data_and_evaluation.md)。

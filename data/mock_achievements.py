@@ -12,3 +12,10 @@ PROJECTS = [
     {"project_id": "project_001", "name": "科技知识图谱协同推理项目", "start_year": 2020, "end_year": 2022,
      "participant_ids": ["person_zw_001", "person_lm_001"], "evidence_id": "ev_project_001"},
 ]
+
+PATENTS = [
+    {"patent_id": "patent_001", "publication_number": "CN-MOCK-001", "title": "知识图谱协同推理方法",
+     "inventor_ids": ["person_zw_001", "person_lm_001"], "evidence_id": "ev_patent_001"},
+    {"patent_id": "patent_002", "publication_number": "CN-MOCK-002", "title": "复合材料制备方法",
+     "inventor_ids": ["person_zw_002"], "evidence_id": "ev_patent_002"},
+]

@@ -98,6 +98,10 @@ class Neo4jGraphRepository:
         rows = self._read(query, entity_id=entity_id)
         for row in rows:
             row["weight"] = float(row["properties"].get("weight", row["properties"].get("confidence", 1.0)))
+            row["evidence_id"] = row["properties"].get("evidence_id") or f"neo4j_relation_{row['source']}_{row['relation']}_{row['target']}"
+            row["source_name"] = "neo4j:relationship"
+            row["source"] = row.pop("source")
+            row["source_backend"] = "neo4j:relationship"
         return rows
 
     def find_path(self, source_id: str, target_id: str, max_hops: int = 4) -> dict:
@@ -128,6 +132,9 @@ class Neo4jGraphRepository:
                     "relation": relationship.type,
                     "weight": float(properties.get("weight", properties.get("confidence", properties.get("strength_score", properties.get("importance", 1.0))))),
                     "properties": _json_value(properties),
+                    "evidence_id": properties.get("evidence_id") or
+                                   f"neo4j_relation_{self._node_id(relationship.start_node)}_{relationship.type}_{self._node_id(relationship.end_node)}",
+                    "source_backend": "neo4j:relationship",
                 })
             return {"nodes": nodes, "edges": edges}
 
@@ -159,3 +166,98 @@ class Neo4jGraphRepository:
         weights = [float(edge.get("weight", 1.0)) for edge in path["edges"]]
         strength = 0.0 if not path["found"] else round(prod(weights), 4)
         return {"source_id": source_id, "target_id": target_id, "strength": strength, "path": path}
+
+    def get_person_company_roles(self, entity_ids: list[str]) -> list[dict]:
+        """查询专家与企业间的真实图关系；关系类型作为企业角色保留。"""
+        query = """
+            MATCH (s:Scholar)-[r]-(c:Enterprise)
+            WHERE s.scholar_id IN $entity_ids
+            RETURN s.scholar_id AS entity_id, c.enterprise_id AS company_id,
+                   coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS company_name,
+                   coalesce(r.role, r.position, type(r)) AS role,
+                   coalesce(r.start_year, r.year) AS start_year,
+                   type(r) AS relation
+            ORDER BY entity_id, company_id
+        """
+        rows = self._read(query, entity_ids=entity_ids)
+        for row in rows:
+            row.update({"evidence_id": f"neo4j_company_role_{row['entity_id']}_{row['company_id']}_{row['relation']}",
+                        "source": "neo4j:Scholar-Enterprise"})
+        return rows
+
+    def get_company_projects(self, company_id: str) -> list[dict]:
+        query = """
+            MATCH (c:Enterprise)-[r]-(p:Project) WHERE c.enterprise_id = $company_id
+            OPTIONAL MATCH (s:Scholar)-[]-(p)
+            RETURN p.project_id AS project_id, c.enterprise_id AS company_id,
+                   coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS company_name,
+                   coalesce(p.title, p.name, p.project_id) AS name,
+                   collect(DISTINCT s.scholar_id) AS participant_ids,
+                   coalesce(p.start_year, p.year) AS start_year,
+                   coalesce(p.end_year, p.start_year, p.year) AS end_year
+            ORDER BY project_id
+        """
+        rows = self._read(query, company_id=company_id)
+        for row in rows:
+            row.update({"evidence_id": f"neo4j_company_project_{row['project_id']}",
+                        "source": "neo4j:Enterprise-Project"})
+        return rows
+
+    def get_company_patents(self, company_id: str) -> list[dict]:
+        query = """
+            MATCH (c:Enterprise)-[r]-(p:Patent) WHERE c.enterprise_id = $company_id
+            OPTIONAL MATCH (s:Scholar)-[]-(p)
+            RETURN p.patent_id AS patent_id, c.enterprise_id AS company_id,
+                   coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS company_name,
+                   coalesce(p.title, p.name, p.publication_number, p.patent_id) AS title,
+                   collect(DISTINCT s.scholar_id) AS inventor_ids
+            ORDER BY patent_id
+        """
+        rows = self._read(query, company_id=company_id)
+        for row in rows:
+            row.update({"evidence_id": f"neo4j_company_patent_{row['patent_id']}",
+                        "source": "neo4j:Enterprise-Patent"})
+        return rows
+
+    def get_chain_structure(self, chain_id: str) -> dict:
+        query = """
+            MATCH (root:IndustrySegment {segment_id: $chain_id})
+            OPTIONAL MATCH (root)-[r]-(child:IndustrySegment)
+            RETURN root.segment_id AS chain_id,
+                   coalesce(root.name_zh, root.name, root.segment_id) AS name,
+                   collect(DISTINCT {node_id: child.segment_id,
+                       name: coalesce(child.name_zh, child.name, child.segment_id),
+                       level: coalesce(child.level, type(r))}) AS node_details
+        """
+        rows = self._read(query, chain_id=chain_id)
+        if not rows:
+            return {"error": "CHAIN_NOT_FOUND", "chain_id": chain_id}
+        row = rows[0]
+        row["node_details"] = [item for item in row.get("node_details", []) if item.get("node_id")]
+        row["nodes"] = [item["node_id"] for item in row["node_details"]]
+        return row
+
+    def get_node_companies(self, node_id: str) -> list[dict]:
+        query = """
+            MATCH (n:IndustrySegment {segment_id: $node_id})-[]-(c:Enterprise)
+            RETURN DISTINCT c.enterprise_id AS company_id,
+                   coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS name,
+                   coalesce(c.industry, n.name_zh, n.name) AS industry
+            ORDER BY company_id
+        """
+        return self._read(query, node_id=node_id)
+
+    def get_node_events(self, node_id: str) -> list[dict]:
+        query = """
+            MATCH (n:IndustrySegment {segment_id: $node_id})-[]-(e:IndustryEvent)
+            RETURN DISTINCT e.event_id AS event_id, n.segment_id AS node_id,
+                   coalesce(e.title, e.name, e.event_id) AS title,
+                   toString(coalesce(e.date, e.event_date, e.year)) AS date,
+                   coalesce(e.importance, e.score, 0) AS importance
+            ORDER BY importance DESC, event_id
+        """
+        rows = self._read(query, node_id=node_id)
+        for row in rows:
+            row.update({"evidence_id": f"neo4j_industry_event_{row['event_id']}",
+                        "source": "neo4j:IndustrySegment-IndustryEvent"})
+        return rows

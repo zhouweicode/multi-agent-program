@@ -5,6 +5,7 @@ from typing import Any
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from models.schemas import DomainResult, ToolCallSpec
 from services.observability import emit_event
+from services.evidence_normalizer import normalize_tool_output
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +47,7 @@ class ToolCallingDomainAgent:
                                result_count=len(output) if isinstance(output, list) else 1,
                                tool_output=output)
                     facts.append({"tool": call["name"], "data": output})
-                    rows = output if isinstance(output, list) else [output]
-                    for row in rows:
-                        if isinstance(row, dict):
-                            ids = row.get("evidence_ids", [row.get("evidence_id")])
-                            evidence.extend({"evidence_id": x, "source_tool": call["name"]} for x in ids if x)
+                    evidence.extend(normalize_tool_output(call["name"], output, list(resolved_entities.values())))
                 except Exception as exc:
                     logger.exception("%s 工具调用失败", self.name)
                     output = {"error": str(exc)}

@@ -5,6 +5,10 @@ from models.settings import Settings
 from services.achievement_service import AchievementService
 from services.entity_service import EntityService
 from services.graph_service import GraphService
+from services.evidence_service import EvidenceService
+from services.enterprise_service import EnterpriseService
+from services.industry_service import IndustryService
+from repositories.neo4j_repository import Neo4jGraphRepository
 
 _managed_services: list[object] = []
 
@@ -35,14 +39,59 @@ def get_achievement_service() -> AchievementService:
 
 @lru_cache(maxsize=4)
 def _graph_service(backend: str, uri: str, database: str) -> GraphService:
-    service = GraphService()
+    service = GraphService(_neo4j_repository(uri, database) if backend == "neo4j" else None)
     _managed_services.append(service)
     return service
+
+
+@lru_cache(maxsize=2)
+def _neo4j_repository(uri: str, database: str) -> Neo4jGraphRepository:
+    repository = Neo4jGraphRepository(Settings.from_env())
+    _managed_services.append(repository)
+    return repository
 
 
 def get_graph_service() -> GraphService:
     settings = Settings.from_env()
     return _graph_service(settings.graph_backend, settings.neo4j_uri, settings.neo4j_database)
+
+
+@lru_cache(maxsize=2)
+def _enterprise_service(backend: str) -> EnterpriseService:
+    settings = Settings.from_env()
+    repository = _neo4j_repository(settings.neo4j_uri, settings.neo4j_database) if backend == "neo4j" else None
+    service = EnterpriseService(repository)
+    _managed_services.append(service)
+    return service
+
+
+def get_enterprise_service() -> EnterpriseService:
+    return _enterprise_service(Settings.from_env().enterprise_backend)
+
+
+@lru_cache(maxsize=2)
+def _industry_service(backend: str) -> IndustryService:
+    settings = Settings.from_env()
+    repository = _neo4j_repository(settings.neo4j_uri, settings.neo4j_database) if backend == "neo4j" else None
+    service = IndustryService(repository)
+    _managed_services.append(service)
+    return service
+
+
+def get_industry_service() -> IndustryService:
+    return _industry_service(Settings.from_env().industry_backend)
+
+
+@lru_cache(maxsize=4)
+def _evidence_service(backend: str, database: str) -> EvidenceService:
+    service = EvidenceService(get_achievement_service())
+    _managed_services.append(service)
+    return service
+
+
+def get_evidence_service() -> EvidenceService:
+    settings = Settings.from_env()
+    return _evidence_service(settings.achievement_backend, settings.mysql_database)
 
 
 def close_resources() -> None:
@@ -52,5 +101,6 @@ def close_resources() -> None:
         if close:
             close()
     _managed_services.clear()
-    for cached in (_entity_service, _achievement_service, _graph_service):
+    for cached in (_entity_service, _achievement_service, _graph_service, _neo4j_repository, _enterprise_service,
+                   _industry_service, _evidence_service):
         cached.cache_clear()

@@ -179,3 +179,6 @@
     grid-template-columns: 1fr;
   }
 }
+/* 主按钮在运行中承担停止操作，颜色明确区分危险动作。 */
+.query-row #submitBtn.stop-mode { background: linear-gradient(135deg, #ff8a72, #ff5f7c); color: #26070c; }
+.query-row #submitBtn.stopping { opacity: .65; cursor: wait; }

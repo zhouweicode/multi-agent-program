@@ -2,8 +2,7 @@
 import logging
 from graph.state import GraphRAGState
 from models.schemas import ValidationResult
-from services.evidence_service import EvidenceService
-from services.resources import get_entity_service
+from services.resources import get_entity_service, get_evidence_service
 from services.observability import emit_event
 from models.contracts import AGENT_DOMAINS, DEFAULT_REQUIRED_FACT_TYPES, FACT_TYPE_TO_TOOL
 
@@ -13,7 +12,7 @@ logger = logging.getLogger(__name__)
 def validator_node(state: GraphRAGState) -> dict:
     errors, missing = [], []
     entity_ids = set(state.get("resolved_entities", {}).values())
-    entity_service, evidence_service = get_entity_service(), EvidenceService()
+    entity_service, evidence_service = get_entity_service(), get_evidence_service()
     for entity_id in entity_ids:
         if not entity_service.exists(entity_id):
             errors.append(f"entity_id 不存在: {entity_id}")
@@ -45,7 +44,12 @@ def validator_node(state: GraphRAGState) -> dict:
             if domain not in missing:
                 missing.append(domain)
     for item in state.get("evidence", []):
-        if not evidence_service.exists(item["evidence_id"], list(entity_ids)):
+        # 新版证据携带原始事实快照，可在不重复访问数据库的情况下做确定性校验。
+        complete = all(item.get(key) not in (None, "") for key in
+                       ("evidence_id", "fact_type", "source_name", "source_record_id", "source_tool"))
+        if not complete:
+            errors.append(f"证据记录不完整: {item.get('evidence_id', 'UNKNOWN')}")
+        elif not item.get("content") and not evidence_service.exists(item["evidence_id"], list(entity_ids)):
             errors.append(f"evidence_id 不存在: {item['evidence_id']}")
     achievement = state.get("achievement_result", {})
     author_papers, common_papers, common_projects, aggregate = None, None, None, None
@@ -78,11 +82,18 @@ def validator_node(state: GraphRAGState) -> dict:
             aggregate = fact["data"]
             if aggregate["common_paper_count"] != len(common_papers or []):
                 errors.append("共同论文 count 与数据条数不一致")
+        if fact["tool"] in {"get_person_patents", "get_common_patents"}:
+            for patent in fact["data"]:
+                if not entity_ids.issubset(set(patent.get("inventor_ids", []))):
+                    errors.append(f"专利发明人归属校验失败: {patent.get('patent_id', 'UNKNOWN')}")
+                if not patent.get("patent_id") or not patent.get("title") or not patent.get("evidence_id"):
+                    errors.append(f"专利数据不完整: {patent.get('patent_id', 'UNKNOWN')}")
     collaboration_tools = {"get_common_papers", "get_common_projects", "aggregate_cooperation"}
     used_tools = {fact["tool"] for fact in achievement.get("facts", [])}
-    if achievement and len(entity_ids) == 1 and "get_author_papers" not in used_tools and not (used_tools & collaboration_tools):
+    if achievement and len(entity_ids) == 1 and "get_author_papers" not in used_tools and not (
+            used_tools & (collaboration_tools | {"get_person_patents"})):
         errors.append("单人论文查询完整性校验失败：缺少作者论文结果")
-    if achievement and (len(entity_ids) > 1 or bool(used_tools & collaboration_tools)) and (
+    if achievement and bool(used_tools & collaboration_tools) and (
             common_papers is None or common_projects is None or aggregate is None):
         errors.append("科研合作数据完整性校验失败：缺少共同论文、共同项目或聚合结果")
     graph_result = state.get("graph_result", {})

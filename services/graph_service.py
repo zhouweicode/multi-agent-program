@@ -14,6 +14,7 @@ class GraphService:
         self.backend = "mock"
         self.mapping = EntityIdMappingRepository()
         self.repository = repository
+        self._owns_repository = repository is None
         if self.repository is None and settings.graph_backend == "neo4j":
             self.repository = Neo4jGraphRepository(settings)
             self.backend = "neo4j"
@@ -41,7 +42,7 @@ class GraphService:
         return {"backend": "mock", "ready": True}
 
     def close(self) -> None:
-        close = getattr(self.repository, "close", None)
+        close = getattr(self.repository, "close", None) if self._owns_repository else None
         if close:
             close()
 

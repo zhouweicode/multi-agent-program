@@ -1,9 +1,10 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { threadId: null, cursor: 0, events: [], eventSource: null, streaming: false, graphState: {} };
+const state = { threadId: null, cursor: 0, events: [], eventSource: null, streaming: false, graphState: {}, running: false, stopping: false };
 
 const eventInfo = {
   QUERY_STARTED: ["query", "查询已进入 LangGraph"], ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
   ENTITY_RESOLUTION_INTERRUPTED: ["entity", "检测到同名实体，等待用户确认"], ENTITY_RESOLUTION_COMPLETED: ["entity", "实体消歧完成"],
+  ENTITY_NOT_FOUND: ["entity", "知识库中未找到实体"],
   SUPERVISOR_PLANNED: ["supervisor", "Supervisor 已生成执行计划"], AGENT_TOOL_CALLED: ["agents", "Agent 发起 Tool Call"],
   AGENT_TOOL_COMPLETED: ["agents", "Tool Observation 已返回"], AGENT_COMPLETED: ["agents", "领域 Agent 执行完成"],
   MERGE_COMPLETED: ["merge", "领域结果与证据已合并"], RULE_VALIDATION_COMPLETED: ["validator", "Rule Validator 校验完成"],
@@ -23,6 +24,20 @@ const nodeLabels = {
 
 function newThreadId() { return `ui-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
 function setRunStatus(text, running = false) { const el = $("#runStatus"); el.textContent = text; el.classList.toggle("running", running); }
+function setSubmitMode(mode) {
+  const button = $("#submitBtn");
+  state.running = mode === "running" || mode === "stopping";
+  state.stopping = mode === "stopping";
+  button.classList.toggle("stop-mode", state.running);
+  button.classList.toggle("stopping", state.stopping);
+  button.disabled = state.stopping;
+  $("#submitLabel").textContent = mode === "running" ? "停止分析" : mode === "stopping" ? "正在停止" : "开始分析";
+  $("#submitIcon").textContent = mode === "running" ? "■" : mode === "stopping" ? "…" : "→";
+}
+function finishRun(statusText) {
+  setSubmitMode("idle");
+  setRunStatus(statusText);
+}
 function resetUI() {
   stopEventStream();
   state.cursor = 0; state.events = []; state.graphState = {};
@@ -106,11 +121,20 @@ function startEventStream() {
     stopEventStream();
     if (payload.status === "NEED_USER_SELECTION") {
       showCandidates(payload.interrupt);
-      setRunStatus("等待实体选择");
+      finishRun("等待实体选择");
+    } else if (payload.status === "ENTITY_NOT_FOUND") {
+      const names = (payload.interrupt?.mentions || []).join("、");
+      finishRun("实体未找到");
+      alert(`未找到实体：${names || "未知实体"}。请补充机构、职称或研究方向后重新提问。`);
     } else if (payload.status === "COMPLETED") {
       renderResult(payload);
+    } else if (payload.status === "CANCELLED") {
+      finishRun("已取消，可重新提问");
+    } else if (payload.status === "TIMED_OUT") {
+      finishRun("执行超时");
+      alert("查询超过运行时限，已安全终止。请缩小问题范围后重试。");
     } else {
-      setRunStatus("执行失败");
+      finishRun("执行失败");
       alert(`执行失败：${payload.error?.message || "未知错误"}`);
     }
   });
@@ -133,7 +157,8 @@ function showCandidates(interrupt) {
       const name = document.createElement("span"); name.className = "candidate-name"; name.textContent = `${candidate.name} · ${candidate.title || "职称未知"}`;
       const org = document.createElement("span"); org.className = "candidate-org"; org.textContent = candidate.organization || "机构未知";
       const id = document.createElement("span"); id.className = "candidate-id"; id.textContent = candidate.entity_id;
-      body.append(name, org, id); label.append(input, body); grid.appendChild(label);
+      const score = document.createElement("span"); score.className = "candidate-id"; score.textContent = candidate.final_score === undefined ? "" : `置信分 ${candidate.final_score} · ${(candidate.match_reasons || []).join("、")}`;
+      body.append(name, org, id, score); label.append(input, body); grid.appendChild(label);
     }); group.appendChild(grid); root.appendChild(group);
   });
   $("#selectionPanel").classList.remove("hidden"); $("#selectionPanel").scrollIntoView({behavior:"smooth", block:"center"});
@@ -146,33 +171,48 @@ function renderResult(payload) {
   badge.textContent = validation.valid ? "VALIDATED" : "VALIDATION FAILED"; badge.style.color = validation.valid ? "var(--green)" : "var(--danger)";
   const chips = $("#entityChips"); chips.innerHTML = "";
   Object.entries(state.graphState.resolved_entities || {}).forEach(([name, id]) => { const chip = document.createElement("span"); chip.textContent = `${name} · ${id}`; chips.appendChild(chip); });
-  $("#answerPanel").classList.remove("hidden"); $("#answerPanel").scrollIntoView({behavior:"smooth", block:"start"}); setRunStatus("已完成");
+  $("#answerPanel").classList.remove("hidden"); $("#answerPanel").scrollIntoView({behavior:"smooth", block:"start"}); finishRun("已完成");
 }
 
 async function handleResponse(response) {
   if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.detail || `HTTP ${response.status}`); }
   const payload = await response.json();
   state.threadId = payload.run_id || payload.thread_id || state.threadId;
-  if (payload.status === "RUNNING") { setRunStatus("执行中", true); startEventStream(); }
-  else if (payload.status === "NEED_USER_SELECTION") { showCandidates(payload.interrupt); setRunStatus("等待实体选择"); }
+  if (payload.status === "RUNNING") { setSubmitMode("running"); setRunStatus("执行中", true); startEventStream(); }
+  else if (payload.status === "NEED_USER_SELECTION") { showCandidates(payload.interrupt); finishRun("等待实体选择"); }
   else { renderResult(payload); stopEventStream(); }
 }
 
 $("#queryForm").addEventListener("submit", async event => {
-  event.preventDefault(); resetUI(); state.threadId = newThreadId();
+  event.preventDefault();
+  if (state.running) { await cancelCurrentAnalysis(); return; }
+  resetUI(); state.threadId = newThreadId(); setSubmitMode("running");
   const button = $("#submitBtn"); button.disabled = true;
   try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value)})}); await handleResponse(response); }
-  catch (error) { setRunStatus("执行失败"); alert(`执行失败：${error.message}`); stopEventStream(); }
-  finally { button.disabled = false; }
+  catch (error) { finishRun("执行失败"); alert(`执行失败：${error.message}`); stopEventStream(); }
+  finally { if (!state.stopping) button.disabled = false; }
 });
 
 $("#selectionForm").addEventListener("submit", async event => {
   event.preventDefault(); const selections = {};
   document.querySelectorAll('#candidateGroups input[type="radio"]:checked').forEach(input => { selections[input.dataset.mention] = input.value; });
-  $("#selectionPanel").classList.add("hidden"); setRunStatus("恢复执行中", true);
+  $("#selectionPanel").classList.add("hidden"); setSubmitMode("running"); setRunStatus("恢复执行中", true);
   try { const response = await fetch(`/queries/${encodeURIComponent(state.threadId)}/resume`, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({selections})}); await handleResponse(response); }
-  catch (error) { setRunStatus("恢复失败"); alert(`恢复失败：${error.message}`); stopEventStream(); }
+  catch (error) { finishRun("恢复失败"); alert(`恢复失败：${error.message}`); stopEventStream(); }
 });
+
+async function cancelCurrentAnalysis() {
+  if (!state.threadId || state.stopping) return;
+  setSubmitMode("stopping"); setRunStatus("正在停止", true);
+  try {
+    const response = await fetch(`/queries/${encodeURIComponent(state.threadId)}/cancel`, {method:"POST"});
+    if (!response.ok) { const payload = await response.json().catch(() => ({})); throw new Error(payload.detail || `HTTP ${response.status}`); }
+    const payload = await response.json();
+    if (payload.status === "CANCELLED") { stopEventStream(); finishRun("已取消，可重新提问"); }
+  } catch (error) {
+    setSubmitMode("running"); setRunStatus("执行中", true); alert(`停止失败：${error.message}`);
+  }
+}
 
 document.querySelectorAll("[data-example]").forEach(button => button.addEventListener("click", () => { $("#question").value = button.dataset.example; $("#question").focus(); }));
 $("#copyState").addEventListener("click", async () => { await navigator.clipboard.writeText($("#stateJson").textContent); $("#copyState").textContent = "已复制"; setTimeout(() => $("#copyState").textContent = "复制", 1200); });

@@ -46,6 +46,19 @@ class DomainResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class EvidenceRecord(BaseModel):
+    """跨 MySQL、Neo4j 与 Mock 后端统一的证据协议。"""
+    evidence_id: str
+    fact_type: str
+    source_type: Literal["mysql", "neo4j", "milvus", "mock", "derived", "unknown"] = "unknown"
+    source_name: str
+    source_record_id: str
+    entity_ids: list[str] = Field(default_factory=list)
+    event_time: int | str | None = None
+    content: dict[str, Any] = Field(default_factory=dict)
+    source_tool: str
+
+
 class ValidationResult(BaseModel):
     valid: bool
     needs_replan: bool = False

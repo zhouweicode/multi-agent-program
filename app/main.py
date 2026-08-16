@@ -16,8 +16,10 @@ from graph.builder import build_graph
 from models.settings import Settings
 from services.checkpoint_service import build_sqlite_checkpointer, close_sqlite_checkpointer
 from services.observability import clear_events, emit_event, get_events
-from services.resources import close_resources
+from services.resources import (close_resources, get_achievement_service, get_entity_service,
+                                get_enterprise_service, get_graph_service, get_industry_service)
 from services.run_service import RunManager
+from repositories.run_repository import SQLiteRunRepository
 
 
 @asynccontextmanager
@@ -27,9 +29,11 @@ async def lifespan(_app: FastAPI):
     close_resources()
     close_sqlite_checkpointer()
 
-app = FastAPI(title="科技知识图谱 Multi-Agent GraphRAG", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="科技知识图谱 Multi-Agent GraphRAG", version="0.9.0", lifespan=lifespan)
 graph = build_graph(checkpointer=build_sqlite_checkpointer())
-runs = RunManager(max_workers=4)
+settings = Settings.from_env()
+runs = RunManager(max_workers=settings.run_max_workers, timeout_seconds=settings.run_timeout_seconds,
+                  repository=SQLiteRunRepository(settings.run_registry_path))
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
@@ -57,9 +61,12 @@ def _public_run(run_id: str) -> dict:
     if record:
         payload = {key: value for key, value in record.items() if key != "result"}
         result = record.get("result") or {}
-        if record["status"] == "COMPLETED":
+        if record["status"] == "COMPLETED" and result:
             state = {key: value for key, value in result.items() if key != "__interrupt__"}
             payload.update({"state": state, "final_answer": state.get("final_answer")})
+        elif record.get("persisted"):
+            snapshot = graph.get_state(_config(run_id))
+            payload.update({"state": snapshot.values, "final_answer": snapshot.values.get("final_answer")})
         return payload
     snapshot = graph.get_state(_config(run_id))
     if not snapshot.values:
@@ -73,10 +80,33 @@ def _public_run(run_id: str) -> dict:
 @app.get("/health")
 def health() -> dict:
     settings = Settings.from_env()
-    return {"status": "ok", "stage": 7, "model_provider": settings.model_provider,
+    return {"status": "ok", "stage": 9, "model_provider": settings.model_provider,
             "model_name": settings.model_name, "entity_backend": settings.entity_backend,
             "achievement_backend": settings.achievement_backend, "graph_backend": settings.graph_backend,
+            "enterprise_backend": settings.enterprise_backend, "industry_backend": settings.industry_backend,
             "embedding_provider": settings.embedding_provider, "checkpointer": "sqlite", "execution": "background+sse"}
+
+
+@app.get("/health/dependencies")
+def dependency_health() -> JSONResponse:
+    """主动探测启用的数据后端；异常被隔离且不暴露密码。"""
+    checks = {}
+    for name, factory in (("entity", get_entity_service), ("achievement", get_achievement_service),
+                          ("enterprise", get_enterprise_service), ("industry", get_industry_service),
+                          ("graph", get_graph_service)):
+        try:
+            checks[name] = factory().health()
+        except Exception as exc:
+            checks[name] = {"ready": False, "error_type": type(exc).__name__, "message": str(exc)}
+    ready = all(item.get("ready", False) for item in checks.values())
+    return JSONResponse(status_code=200 if ready else 503,
+                        content={"status": "ok" if ready else "degraded", "stage": 9, "dependencies": checks})
+
+
+@app.get("/metrics")
+def metrics() -> dict:
+    """教学版运行指标；不暴露问题、State 或密钥。"""
+    return runs.stats()
 
 
 @app.get("/", include_in_schema=False)
@@ -119,6 +149,15 @@ def resume_query(run_id: str, request: ResumeRequest) -> JSONResponse:
     emit_event("QUERY_RESUMED", thread_id=run_id, node_input={"selections": request.selections})
     runs.submit(run_id, lambda: graph.invoke(Command(resume=request.selections), config=_config(run_id)))
     return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id, "status": "RUNNING"})
+
+
+@app.post("/queries/{run_id}/cancel", status_code=202)
+def cancel_query(run_id: str) -> JSONResponse:
+    if not runs.get(run_id):
+        raise HTTPException(status_code=404, detail="run_id 不存在")
+    if not runs.cancel(run_id):
+        raise HTTPException(status_code=409, detail="当前 Run 已结束或不可取消")
+    return JSONResponse(status_code=202, content={"run_id": run_id, "status": runs.get(run_id)["status"]})
 
 
 @app.get("/queries/{run_id}/events")

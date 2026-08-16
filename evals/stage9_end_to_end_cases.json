@@ -1,0 +1,9 @@
+[
+  {"id":"paper_single","question":"张伟发表过哪些论文？","selections":{"张伟":"person_zw_001"},"domain":"achievement","tools":["get_author_papers"],"answer_terms":["发表论文"]},
+  {"id":"patent_single","question":"张伟有哪些专利？","selections":{"张伟":"person_zw_001"},"domain":"achievement","tools":["get_person_patents"],"answer_terms":["发明专利"]},
+  {"id":"education_single","question":"张伟的教育经历是什么？","selections":{"张伟":"person_zw_001"},"domain":"talent","tools":["get_education_history"],"answer_terms":["教育经历"]},
+  {"id":"employment_single","question":"张伟在哪里工作？","selections":{"张伟":"person_zw_001"},"domain":"talent","tools":["get_person_profile"],"answer_terms":["任职经历","清华大学"]},
+  {"id":"academic_complex","question":"综合分析张伟和李明的学术和职业合作关系。","selections":{"张伟":"person_zw_001","李明":"person_lm_001"},"domain":"achievement","answer_terms":["学术合作","职业合作"]},
+  {"id":"graph_path","question":"分析张伟与李明之间的多跳路径和关系强度。","selections":{"张伟":"person_zw_001","李明":"person_lm_001"},"domain":"graph","answer_terms":["图关系推理"]},
+  {"id":"verification","question":"判断张伟和李明是不是长期稳定的核心科研合作伙伴。","selections":{"张伟":"person_zw_001","李明":"person_lm_001"},"domain":"achievement","answer_terms":["语义验证结论"]}
+]

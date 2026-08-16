@@ -1,0 +1,7 @@
+[
+  {"mention": "张伟", "context": "清华大学计算机系教授张伟发表过哪些论文？", "expected_entity_id": "person_zw_001"},
+  {"mention": "张伟", "context": "北京理工大学材料学院的张伟有哪些成果？", "expected_entity_id": "person_zw_002"},
+  {"mention": "李明", "context": "清华大学人工智能研究院李明的科研合作", "expected_entity_id": "person_lm_001"},
+  {"mention": "李明", "context": "中科院自动化所模式识别研究员李明", "expected_entity_id": "person_lm_002"},
+  {"mention": "不存在的专家", "context": "查询不存在的专家论文", "expected_status": "ENTITY_NOT_FOUND"}
+]

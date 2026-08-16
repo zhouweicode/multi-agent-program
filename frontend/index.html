@@ -21,7 +21,7 @@
 
   <main class="shell">
     <section class="hero">
-      <div class="eyebrow">STAGE 6 · BGE-M3 + MILVUS + NEO4J</div>
+      <div class="eyebrow">STAGE 9 · REAL DATA + UNIFIED EVIDENCE + EVALUATION</div>
       <h1>让每一次推理<br><span>清晰可见</span></h1>
       <p>输入科技知识图谱问题，实时观察 Router、实体消歧、Supervisor、领域 Agent、Tool Calling 与验证链路。</p>
     </section>
@@ -31,14 +31,17 @@
         <label for="question">向知识图谱提问</label>
         <div class="query-row">
           <textarea id="question" rows="3" placeholder="例如：综合分析张伟和李明的学术、职业和产业合作关系。" required></textarea>
-          <button id="submitBtn" type="submit"><span>开始分析</span><span class="arrow">→</span></button>
+          <button id="submitBtn" type="submit"><span id="submitLabel">开始分析</span><span id="submitIcon" class="arrow">→</span></button>
         </div>
         <div class="form-meta">
           <div class="examples">
             <span>试试：</span>
-            <button type="button" data-example="张伟发表过哪些论文？">论文查询</button>
-            <button type="button" data-example="综合分析张伟和李明的学术、职业和产业合作关系。">综合关系</button>
-            <button type="button" data-example="判断张伟和李明是不是长期稳定的核心科研合作伙伴。">语义验证</button>
+            <button type="button" data-example="清华大学计算机系的张伟发表过哪些论文？">论文成果</button>
+            <button type="button" data-example="清华大学计算机系的张伟有哪些专利？">专利成果</button>
+            <button type="button" data-example="清华大学计算机系的张伟有哪些教育经历？">教育经历</button>
+            <button type="button" data-example="综合分析张伟和李明的学术、职业和企业合作关系。">综合合作</button>
+            <button type="button" data-example="分析张伟与李明之间的多跳间接关系和路径强度。">间接关系</button>
+            <button type="button" data-example="判断张伟和李明是不是长期稳定的核心科研合作伙伴。">合作验证</button>
           </div>
           <label class="replan-label">最大重规划 <input id="maxReplans" type="number" min="0" max="10" value="2"></label>
         </div>
@@ -56,7 +59,7 @@
             <span class="connector">→</span>
             <div class="flow-node" data-node="router"><i>02</i><strong>Router</strong><small>意图与领域分类</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="entity"><i>03</i><strong>Entity Resolution</strong><small>BGE-M3 + RRF</small></div>
+            <div class="flow-node" data-node="entity"><i>03</i><strong>Entity Resolution</strong><small>MySQL + BGE-M3 + RRF</small></div>
             <span class="connector">→</span>
             <div class="flow-node" data-node="supervisor"><i>04</i><strong>Supervisor</strong><small>任务拆解与调度</small></div>
             <span class="connector">→</span>

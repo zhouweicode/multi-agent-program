@@ -24,6 +24,8 @@ class Settings:
     entity_backend: str = "milvus"
     achievement_backend: str = "mock"
     graph_backend: str = "mock"
+    enterprise_backend: str = "mock"
+    industry_backend: str = "mock"
     mysql_host: str = "127.0.0.1"
     mysql_port: int = 3306
     mysql_database: str = "gkx"
@@ -41,6 +43,13 @@ class Settings:
     milvus_token: str | None = None
     milvus_collection: str = "scholar_entities"
     milvus_rrf_k: int = 60
+    entity_candidate_top_k: int = 10
+    entity_auto_resolve_threshold: float = 0.90
+    entity_score_gap_threshold: float = 0.15
+    entity_vector_min_score: float = 0.02
+    run_max_workers: int = 4
+    run_timeout_seconds: float = 120
+    run_registry_path: str = ".runtime/runs.sqlite"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -58,6 +67,8 @@ class Settings:
                    entity_backend=os.getenv("ENTITY_BACKEND", "milvus").lower(),
                    achievement_backend=os.getenv("ACHIEVEMENT_BACKEND", "mock").lower(),
                    graph_backend=os.getenv("GRAPH_BACKEND", "mock").lower(),
+                   enterprise_backend=os.getenv("ENTERPRISE_BACKEND", "mock").lower(),
+                   industry_backend=os.getenv("INDUSTRY_BACKEND", "mock").lower(),
                    mysql_host=os.getenv("MYSQL_HOST", "127.0.0.1"),
                    mysql_port=int(os.getenv("MYSQL_PORT", "3306")),
                    mysql_database=os.getenv("MYSQL_DATABASE", "gkx"),
@@ -74,4 +85,11 @@ class Settings:
                    milvus_uri=os.getenv("GRAPHRAG_MILVUS_URI", ".runtime/milvus-bge-m3.db"),
                    milvus_token=os.getenv("MILVUS_TOKEN"),
                    milvus_collection=os.getenv("MILVUS_COLLECTION", "scholar_entities"),
-                   milvus_rrf_k=int(os.getenv("MILVUS_RRF_K", "60")))
+                   milvus_rrf_k=int(os.getenv("MILVUS_RRF_K", "60")),
+                   entity_candidate_top_k=int(os.getenv("ENTITY_CANDIDATE_TOP_K", "10")),
+                   entity_auto_resolve_threshold=float(os.getenv("ENTITY_AUTO_RESOLVE_THRESHOLD", "0.90")),
+                   entity_score_gap_threshold=float(os.getenv("ENTITY_SCORE_GAP_THRESHOLD", "0.15")),
+                   entity_vector_min_score=float(os.getenv("ENTITY_VECTOR_MIN_SCORE", "0.02")),
+                   run_max_workers=int(os.getenv("RUN_MAX_WORKERS", "4")),
+                   run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "120")),
+                   run_registry_path=os.getenv("RUN_REGISTRY_PATH", ".runtime/runs.sqlite"))
