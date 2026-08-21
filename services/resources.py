@@ -1,4 +1,5 @@
 """进程级 Service/Repository 生命周期容器，避免每次 Tool Call 重建数据库客户端。"""
+from dataclasses import replace
 from functools import lru_cache
 
 from models.settings import Settings
@@ -9,20 +10,39 @@ from services.evidence_service import EvidenceService
 from services.enterprise_service import EnterpriseService
 from services.industry_service import IndustryService
 from repositories.neo4j_repository import Neo4jGraphRepository
+from kg_workflow.registry import KGWorkflowRegistry
 
 _managed_services: list[object] = []
 
 
+def active_release_settings(settings: Settings | None = None) -> tuple[Settings, dict | None]:
+    """Resolve the serving collection from the atomically activated KG release pointer."""
+    settings = settings or Settings.from_env()
+    registry = KGWorkflowRegistry(settings.kg_workflow_registry_path)
+    try:
+        active = registry.active_release()
+    finally:
+        registry.close()
+    if active and active.get("milvus_collection"):
+        settings = replace(settings, milvus_collection=active["milvus_collection"])
+    return settings, active
+
+
 @lru_cache(maxsize=4)
-def _entity_service(backend: str, milvus_uri: str, collection: str) -> EntityService:
-    service = EntityService()
+def _entity_service(backend: str, milvus_uri: str, collection: str,
+                    embedding_provider: str, embedding_dimension: int) -> EntityService:
+    settings = replace(Settings.from_env(), entity_backend=backend, milvus_uri=milvus_uri,
+                       milvus_collection=collection, embedding_provider=embedding_provider,
+                       embedding_dimension=embedding_dimension)
+    service = EntityService(settings=settings)
     _managed_services.append(service)
     return service
 
 
 def get_entity_service() -> EntityService:
-    settings = Settings.from_env()
-    return _entity_service(settings.entity_backend, settings.milvus_uri, settings.milvus_collection)
+    settings, _ = active_release_settings()
+    return _entity_service(settings.entity_backend, settings.milvus_uri, settings.milvus_collection,
+                           settings.embedding_provider, settings.embedding_dimension)
 
 
 @lru_cache(maxsize=4)

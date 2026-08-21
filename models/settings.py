@@ -50,6 +50,7 @@ class Settings:
     run_max_workers: int = 4
     run_timeout_seconds: float = 120
     run_registry_path: str = ".runtime/runs.sqlite"
+    kg_workflow_registry_path: str = ".runtime/kg-workflow.sqlite"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -92,4 +93,5 @@ class Settings:
                    entity_vector_min_score=float(os.getenv("ENTITY_VECTOR_MIN_SCORE", "0.02")),
                    run_max_workers=int(os.getenv("RUN_MAX_WORKERS", "4")),
                    run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "120")),
-                   run_registry_path=os.getenv("RUN_REGISTRY_PATH", ".runtime/runs.sqlite"))
+                   run_registry_path=os.getenv("RUN_REGISTRY_PATH", ".runtime/runs.sqlite"),
+                   kg_workflow_registry_path=os.getenv("KG_WORKFLOW_REGISTRY_PATH", ".runtime/kg-workflow.sqlite"))

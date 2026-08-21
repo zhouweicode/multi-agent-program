@@ -13,7 +13,8 @@ class MilvusEntityRepository:
 
     def __init__(self, settings: Settings | None = None, embedding: EmbeddingProvider | None = None,
                  client: Any | None = None):
-        self.settings = settings or Settings.from_env()
+        # Injected clients are test/adaptor boundaries and must not inherit a developer's .env.
+        self.settings = settings or (Settings() if client is not None else Settings.from_env())
         self.embedding = embedding or EmbeddingFactory.create(self.settings)
         self.collection = self.settings.milvus_collection
         if client is None:
@@ -76,6 +77,14 @@ class MilvusEntityRepository:
             })
         result = self.client.upsert(self.collection, payload)
         return int(result.get("upsert_count", len(payload)))
+
+    def delete_entities(self, canonical_ids: list[str]) -> int:
+        if not canonical_ids:
+            return 0
+        escaped = [value.replace("\\", "\\\\").replace('"', '\\"') for value in canonical_ids]
+        expression = "canonical_id in [" + ",".join(f'\"{value}\"' for value in escaped) + "]"
+        self.client.delete(self.collection, filter=expression)
+        return len(canonical_ids)
 
     def search_scholars(self, mention: str, limit: int = 10) -> list[dict]:
         from pymilvus import AnnSearchRequest, RRFRanker

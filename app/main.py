@@ -16,7 +16,7 @@ from graph.builder import build_graph
 from models.settings import Settings
 from services.checkpoint_service import build_sqlite_checkpointer, close_sqlite_checkpointer
 from services.observability import clear_events, emit_event, get_events
-from services.resources import (close_resources, get_achievement_service, get_entity_service,
+from services.resources import (active_release_settings, close_resources, get_achievement_service, get_entity_service,
                                 get_enterprise_service, get_graph_service, get_industry_service)
 from services.run_service import RunManager
 from repositories.run_repository import SQLiteRunRepository
@@ -80,11 +80,14 @@ def _public_run(run_id: str) -> dict:
 @app.get("/health")
 def health() -> dict:
     settings = Settings.from_env()
+    _, active_release = active_release_settings(settings)
     return {"status": "ok", "stage": 9, "model_provider": settings.model_provider,
             "model_name": settings.model_name, "entity_backend": settings.entity_backend,
             "achievement_backend": settings.achievement_backend, "graph_backend": settings.graph_backend,
             "enterprise_backend": settings.enterprise_backend, "industry_backend": settings.industry_backend,
-            "embedding_provider": settings.embedding_provider, "checkpointer": "sqlite", "execution": "background+sse"}
+            "embedding_provider": settings.embedding_provider, "checkpointer": "sqlite", "execution": "background+sse",
+            "active_kg_release": active_release.get("release_id") if active_release else None,
+            "active_milvus_collection": active_release.get("milvus_collection") if active_release else settings.milvus_collection}
 
 
 @app.get("/health/dependencies")

@@ -121,6 +121,19 @@ export ENTITY_BACKEND=milvus
 python -m scripts.sync_milvus_entities --source mysql --limit 10000
 ```
 
+### 独立合成数据源
+
+需要在不修改原始 `gkx` 的前提下演练完整图谱构建时，可生成确定性的 `gkx_synthetic`：
+
+```bash
+python -m scripts.generate_synthetic_gkx
+python -m scripts.validate_synthetic_gkx
+python -m scripts.import_synthetic_gkx  # 默认只预览，不连接或写入 MySQL
+```
+
+实际导入必须显式指定 `--apply --confirm-database gkx_synthetic`。导入器会拒绝把 `gkx`
+作为目标。数据模型、规模参数和安全操作参见 `docs/07_synthetic_gkx_dataset.md`。
+
 真实 BGE-M3 首次运行会下载模型，并使用 1024 维 Dense Vector 与模型 lexical weights。测试显式注入 Mock Embedding，不重复加载模型。
 
 统一 ID 示例：

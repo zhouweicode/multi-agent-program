@@ -9,8 +9,9 @@ from repositories.milvus_entity_repository import MilvusEntityRepository
 
 
 class EntityService:
-    def __init__(self, repository=None, exact_repository=None, vector_repository=None, backend: str | None = None):
-        settings = Settings.from_env()
+    def __init__(self, repository=None, exact_repository=None, vector_repository=None,
+                 backend: str | None = None, settings: Settings | None = None):
+        settings = settings or Settings.from_env()
         configured_backend = backend or settings.entity_backend
         self.backend = "mock"
         self.settings = settings
