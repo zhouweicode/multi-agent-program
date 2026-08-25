@@ -15,8 +15,15 @@ def test_frontend_index_and_assets_are_served():
     assert "NODE INSPECTOR" in page.text
     assert 'id="submitLabel"' in page.text
     assert "专利成果" in page.text
-    assert "教育经历" in page.text
+    assert "跨域画像" in page.text
+    assert "成果对比" in page.text
+    assert "共同成果" in page.text
+    assert "产企关联" in page.text
     assert "间接关系" in page.text
+    assert "综合验证" in page.text
+    assert "深圳科技大学003的高芳" in page.text
+    assert "上海科技大学002的赵强" in page.text
+    assert "李明" not in page.text
     assert client.get("/static/styles.css").status_code == 200
     layout_css = client.get("/static/layout-fix.css")
     assert layout_css.status_code == 200

@@ -32,6 +32,7 @@ def test_comprehensive_cooperation_query_returns_business_conclusion():
     assert "一种混合检索方法" in answer
     assert "完成 3 次工具调用" not in answer
     assert "综合结论" in answer
+    assert "证据编号" not in answer
 
 
 def test_incomplete_enterprise_cooperation_requires_enterprise_replan():

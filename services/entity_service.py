@@ -6,6 +6,7 @@ from models.settings import Settings
 from repositories.mysql_repository import MySQLRepository
 from repositories.entity_id_mapping_repository import EntityIdMappingRepository
 from repositories.milvus_entity_repository import MilvusEntityRepository
+from repositories.milvus_subprocess_repository import MilvusSubprocessEntityRepository
 
 
 class EntityService:
@@ -19,15 +20,17 @@ class EntityService:
         self.repository = repository
         self.exact_repository = exact_repository
         self.vector_repository = vector_repository
+        vector_class = (MilvusSubprocessEntityRepository if "://" not in settings.milvus_uri
+                        else MilvusEntityRepository)
         if self.repository is None and configured_backend == "mysql":
             self.repository = MySQLRepository(settings)
             self.backend = "mysql"
         elif self.repository is None and configured_backend == "milvus":
-            self.repository = MilvusEntityRepository(settings)
+            self.repository = vector_class(settings)
             self.backend = "milvus"
         elif self.repository is None and configured_backend == "hybrid":
             self.exact_repository = self.exact_repository or MySQLRepository(settings)
-            self.vector_repository = self.vector_repository or MilvusEntityRepository(settings)
+            self.vector_repository = self.vector_repository or vector_class(settings)
             self.backend = "hybrid"
         elif self.repository is not None:
             self.backend = getattr(repository, "backend", "mock")
@@ -106,6 +109,11 @@ class EntityService:
             return normalized
         return [item.copy() | {"exact_match": True, "retrieval_method": "mock_exact"}
                 for item in MOCK_ENTITIES if item["name"] == mention]
+
+    def mentions_in_text(self, text: str) -> list[str]:
+        repository = self.exact_repository if self.backend == "hybrid" else self.repository
+        finder = getattr(repository, "find_scholar_mentions", None)
+        return finder(text) if finder else []
 
     def auto_resolve(self, candidates: list[dict]) -> str | None:
         """唯一精确候选直接确认；多候选必须同时满足绝对阈值与 Top1 分差。"""

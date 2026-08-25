@@ -72,6 +72,9 @@ class Neo4jGraphRepository:
             records = session.execute_read(lambda tx: list(tx.run(query, **parameters)))
         return [{key: _json_value(record[key]) for key in record.keys()} for record in records]
 
+    def _managed(self, variable: str) -> str:
+        return f" AND {variable}.synthetic = true" if self.settings.neo4j_managed_only else ""
+
     @staticmethod
     def _node_id(node: Any) -> str | None:
         for key in ("entity_id", "scholar_id", "org_id", "dept_id", "paper_id", "patent_id",
@@ -87,7 +90,7 @@ class Neo4jGraphRepository:
         node_id = _id_expression("n")
         other_id = _id_expression("m")
         query = f"""
-            MATCH (n) WHERE {node_id} = $entity_id
+            MATCH (n) WHERE {node_id} = $entity_id{self._managed('n')}
             WITH n ORDER BY {_priority_expression('n')} LIMIT 1
             MATCH (n)-[r]-(m)
             RETURN {other_id} AS entity_id, labels(m) AS labels,
@@ -109,9 +112,9 @@ class Neo4jGraphRepository:
         source_expression = _id_expression("s")
         target_expression = _id_expression("t")
         query = f"""
-            MATCH (s) WHERE {source_expression} = $source_id
+            MATCH (s) WHERE {source_expression} = $source_id{self._managed('s')}
             WITH s ORDER BY {_priority_expression('s')} LIMIT 1
-            MATCH (t) WHERE {target_expression} = $target_id
+            MATCH (t) WHERE {target_expression} = $target_id{self._managed('t')}
             WITH s, t ORDER BY {_priority_expression('t')} LIMIT 1
             MATCH p = shortestPath((s)-[*..{hops}]-(t))
             RETURN p
@@ -151,7 +154,7 @@ class Neo4jGraphRepository:
         end_expression = _id_expression("m")
         for hop in range(1, depth + 1):
             query = f"""
-                MATCH (s) WHERE {start_expression} = $entity_id
+                MATCH (s) WHERE {start_expression} = $entity_id{self._managed('s')}
                 WITH s ORDER BY {_priority_expression('s')} LIMIT 1
                 MATCH (s)-[*{hop}]-(m) WHERE {end_expression} IS NOT NULL
                 RETURN DISTINCT {end_expression} AS entity_id ORDER BY entity_id
@@ -171,14 +174,15 @@ class Neo4jGraphRepository:
         """查询专家与企业间的真实图关系；关系类型作为企业角色保留。"""
         query = """
             MATCH (s:Scholar)-[r]-(c:Enterprise)
-            WHERE s.scholar_id IN $entity_ids
+            WHERE s.scholar_id IN $entity_ids%s%s
             RETURN s.scholar_id AS entity_id, c.enterprise_id AS company_id,
                    coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS company_name,
-                   coalesce(r.role, r.position, type(r)) AS role,
+                   coalesce(r.role, properties(r)['position'], type(r)) AS role,
                    coalesce(r.start_year, r.year) AS start_year,
                    type(r) AS relation
             ORDER BY entity_id, company_id
         """
+        query = query % (self._managed("s"), self._managed("c"))
         rows = self._read(query, entity_ids=entity_ids)
         for row in rows:
             row.update({"evidence_id": f"neo4j_company_role_{row['entity_id']}_{row['company_id']}_{row['relation']}",
@@ -187,7 +191,7 @@ class Neo4jGraphRepository:
 
     def get_company_projects(self, company_id: str) -> list[dict]:
         query = """
-            MATCH (c:Enterprise)-[r]-(p:Project) WHERE c.enterprise_id = $company_id
+            MATCH (c:Enterprise)-[r]-(p:Project) WHERE c.enterprise_id = $company_id%s%s
             OPTIONAL MATCH (s:Scholar)-[]-(p)
             RETURN p.project_id AS project_id, c.enterprise_id AS company_id,
                    coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS company_name,
@@ -197,6 +201,7 @@ class Neo4jGraphRepository:
                    coalesce(p.end_year, p.start_year, p.year) AS end_year
             ORDER BY project_id
         """
+        query = query % (self._managed("c"), self._managed("p"))
         rows = self._read(query, company_id=company_id)
         for row in rows:
             row.update({"evidence_id": f"neo4j_company_project_{row['project_id']}",
@@ -205,7 +210,7 @@ class Neo4jGraphRepository:
 
     def get_company_patents(self, company_id: str) -> list[dict]:
         query = """
-            MATCH (c:Enterprise)-[r]-(p:Patent) WHERE c.enterprise_id = $company_id
+            MATCH (c:Enterprise)-[r]-(p:Patent) WHERE c.enterprise_id = $company_id%s%s
             OPTIONAL MATCH (s:Scholar)-[]-(p)
             RETURN p.patent_id AS patent_id, c.enterprise_id AS company_id,
                    coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS company_name,
@@ -213,6 +218,7 @@ class Neo4jGraphRepository:
                    collect(DISTINCT s.scholar_id) AS inventor_ids
             ORDER BY patent_id
         """
+        query = query % (self._managed("c"), self._managed("p"))
         rows = self._read(query, company_id=company_id)
         for row in rows:
             row.update({"evidence_id": f"neo4j_company_patent_{row['patent_id']}",
@@ -221,7 +227,7 @@ class Neo4jGraphRepository:
 
     def get_chain_structure(self, chain_id: str) -> dict:
         query = """
-            MATCH (root:IndustrySegment {segment_id: $chain_id})
+            MATCH (root:IndustrySegment {segment_id: $chain_id}) WHERE true%s
             OPTIONAL MATCH (root)-[r]-(child:IndustrySegment)
             RETURN root.segment_id AS chain_id,
                    coalesce(root.name_zh, root.name, root.segment_id) AS name,
@@ -229,6 +235,7 @@ class Neo4jGraphRepository:
                        name: coalesce(child.name_zh, child.name, child.segment_id),
                        level: coalesce(child.level, type(r))}) AS node_details
         """
+        query = query % self._managed("root")
         rows = self._read(query, chain_id=chain_id)
         if not rows:
             return {"error": "CHAIN_NOT_FOUND", "chain_id": chain_id}
@@ -240,24 +247,43 @@ class Neo4jGraphRepository:
     def get_node_companies(self, node_id: str) -> list[dict]:
         query = """
             MATCH (n:IndustrySegment {segment_id: $node_id})-[]-(c:Enterprise)
+            WHERE true%s%s
             RETURN DISTINCT c.enterprise_id AS company_id,
                    coalesce(c.name_zh, c.name, c.name_en, c.enterprise_id) AS name,
                    coalesce(c.industry, n.name_zh, n.name) AS industry
             ORDER BY company_id
         """
+        query = query % (self._managed("n"), self._managed("c"))
         return self._read(query, node_id=node_id)
 
     def get_node_events(self, node_id: str) -> list[dict]:
         query = """
             MATCH (n:IndustrySegment {segment_id: $node_id})-[]-(e:IndustryEvent)
+            WHERE true%s%s
             RETURN DISTINCT e.event_id AS event_id, n.segment_id AS node_id,
                    coalesce(e.title, e.name, e.event_id) AS title,
-                   toString(coalesce(e.date, e.event_date, e.year)) AS date,
-                   coalesce(e.importance, e.score, 0) AS importance
+                   toString(coalesce(properties(e)['date'], e.event_date, properties(e)['year'])) AS date,
+                   coalesce(e.importance, properties(e)['score'], 0) AS importance
             ORDER BY importance DESC, event_id
         """
+        query = query % (self._managed("n"), self._managed("e"))
         rows = self._read(query, node_id=node_id)
         for row in rows:
             row.update({"evidence_id": f"neo4j_industry_event_{row['event_id']}",
                         "source": "neo4j:IndustrySegment-IndustryEvent"})
         return rows
+
+    def search_industry_segments(self, query_text: str, limit: int = 10) -> list[dict]:
+        """Resolve a natural-language industry name before ID-based traversal."""
+        query = """
+            MATCH (n:IndustrySegment) WHERE true%s
+              AND ($query_text = '' OR n.name_zh CONTAINS $query_text OR n.segment_id = $query_text)
+            OPTIONAL MATCH (n)-[:HAS_EVENT]->(e:IndustryEvent)
+            RETURN n.segment_id AS segment_id,
+                   coalesce(n.name_zh, n.name, n.segment_id) AS name,
+                   n.level AS level, n.parent_segment_id AS parent_segment_id,
+                   count(e) AS event_count
+            ORDER BY event_count DESC, segment_id
+            LIMIT $limit
+        """ % self._managed("n")
+        return self._read(query, query_text=query_text.strip(), limit=max(1, min(int(limit), 50)))

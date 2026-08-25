@@ -6,6 +6,8 @@ from graph.routing import after_rule_validation, after_verification
 from nodes.validator_node import validator_node
 from tools.verification_tools import (verify_evidence, check_source, validate_relation,
                                       check_constraints, get_cooperation_timeline)
+from models.llm import ModelFactory, MockVerificationModel
+from langchain_core.messages import AIMessage, ToolMessage
 
 
 def _run_semantic_scenario(thread_id: str = "stage3-semantic") -> dict:
@@ -34,6 +36,24 @@ def test_verification_agent_executes_five_step_tool_loop():
     assert [call["name"] for call in result["tool_calls"]] == expected
     assert [item["tool"] for item in result["observations"]] == expected
     assert result["status"] == "PASS"
+
+
+def test_verification_empty_final_model_response_falls_back_to_tool_results(monkeypatch):
+    class EmptyFinalVerificationModel(MockVerificationModel):
+        def invoke(self, messages):
+            if len([item for item in messages if isinstance(item, ToolMessage)]) >= 5:
+                return AIMessage(content="")
+            return super().invoke(messages)
+
+    monkeypatch.setattr(ModelFactory, "verification_model", lambda: EmptyFinalVerificationModel())
+    result = VerificationAgent().run(
+        question="判断是否为长期稳定核心科研合作伙伴",
+        entity_ids=["person_zw_001", "person_lm_001"],
+        evidence_ids=["ev_paper_001", "ev_paper_002", "ev_project_001"],
+    )
+    assert result["status"] == "PASS"
+    assert result["needs_replan"] is False
+    assert "确定性判定" in result["reason"]
 
 
 def test_verification_tools_check_evidence_relation_timeline_and_constraints():

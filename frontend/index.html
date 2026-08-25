@@ -30,18 +30,22 @@
       <form id="queryForm">
         <label for="question">向知识图谱提问</label>
         <div class="query-row">
-          <textarea id="question" rows="3" placeholder="例如：综合分析张伟和李明的学术、职业和产业合作关系。" required></textarea>
+          <textarea id="question" rows="3" placeholder="例如：综合分析深圳科技大学003的高芳和上海科技大学002的赵强的学术、职业和企业合作关系。" required></textarea>
           <button id="submitBtn" type="submit"><span id="submitLabel">开始分析</span><span id="submitIcon" class="arrow">→</span></button>
         </div>
         <div class="form-meta">
           <div class="examples">
             <span>试试：</span>
-            <button type="button" data-example="清华大学计算机系的张伟发表过哪些论文？">论文成果</button>
-            <button type="button" data-example="清华大学计算机系的张伟有哪些专利？">专利成果</button>
-            <button type="button" data-example="清华大学计算机系的张伟有哪些教育经历？">教育经历</button>
-            <button type="button" data-example="综合分析张伟和李明的学术、职业和企业合作关系。">综合合作</button>
-            <button type="button" data-example="分析张伟与李明之间的多跳间接关系和路径强度。">间接关系</button>
-            <button type="button" data-example="判断张伟和李明是不是长期稳定的核心科研合作伙伴。">合作验证</button>
+            <button type="button" data-example="深圳科技大学003的高芳发表过哪些论文？">论文成果</button>
+            <button type="button" data-example="深圳科技大学003的高芳有哪些专利？">专利成果</button>
+            <button type="button" data-example="综合分析深圳科技大学003的高芳的教育经历、职业履历、论文、项目、专利和企业任职，形成跨领域专家画像。">跨域画像</button>
+            <button type="button" data-example="对比深圳科技大学003的高芳和上海科技大学002的赵强在论文、科研项目、专利及企业任职方面的成果与差异。">成果对比</button>
+            <button type="button" data-example="综合分析深圳科技大学003的高芳和上海科技大学002的赵强的学术、职业和企业合作关系。">综合合作</button>
+            <button type="button" data-example="找出深圳科技大学003的高芳和上海科技大学002的赵强共同参与的论文、项目和专利，并汇总可核验的合作证据。">共同成果</button>
+            <button type="button" data-example="分析深圳科技大学003的高芳和上海科技大学002的赵强的企业任职、关联企业、企业项目与专利，并追踪相关产业链节点。">产企关联</button>
+            <button type="button" data-example="分析深圳科技大学003的高芳与上海科技大学002的赵强之间的多跳间接关系和路径强度。">间接关系</button>
+            <button type="button" data-example="判断深圳科技大学003的高芳和上海科技大学002的赵强是不是长期稳定的核心科研合作伙伴。">合作验证</button>
+            <button type="button" data-example="基于论文、项目、专利、任职和图谱路径证据，验证深圳科技大学003的高芳与上海科技大学002的赵强是否存在稳定的产学研合作关系，并说明证据不足之处。">综合验证</button>
           </div>
           <label class="replan-label">最大重规划 <input id="maxReplans" type="number" min="0" max="10" value="2"></label>
         </div>

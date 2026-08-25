@@ -35,6 +35,7 @@ class Settings:
     neo4j_user: str = "neo4j"
     neo4j_password: str | None = None
     neo4j_database: str = "neo4j"
+    neo4j_managed_only: bool = False
     embedding_provider: str = "bge_m3"
     embedding_model_name: str = "BAAI/bge-m3"
     embedding_cache_dir: str = ".runtime/huggingface"
@@ -48,7 +49,7 @@ class Settings:
     entity_score_gap_threshold: float = 0.15
     entity_vector_min_score: float = 0.02
     run_max_workers: int = 4
-    run_timeout_seconds: float = 120
+    run_timeout_seconds: float = 300
     run_registry_path: str = ".runtime/runs.sqlite"
     kg_workflow_registry_path: str = ".runtime/kg-workflow.sqlite"
 
@@ -79,6 +80,7 @@ class Settings:
                    neo4j_user=os.getenv("NEO4J_USER", "neo4j"),
                    neo4j_password=os.getenv("NEO4J_PASSWORD"),
                    neo4j_database=os.getenv("NEO4J_DATABASE", "neo4j"),
+                   neo4j_managed_only=os.getenv("NEO4J_MANAGED_ONLY", "false").lower() == "true",
                    embedding_provider=os.getenv("EMBEDDING_PROVIDER", "bge_m3").lower(),
                    embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", "BAAI/bge-m3"),
                    embedding_cache_dir=os.getenv("EMBEDDING_CACHE_DIR", ".runtime/huggingface"),
@@ -92,6 +94,6 @@ class Settings:
                    entity_score_gap_threshold=float(os.getenv("ENTITY_SCORE_GAP_THRESHOLD", "0.15")),
                    entity_vector_min_score=float(os.getenv("ENTITY_VECTOR_MIN_SCORE", "0.02")),
                    run_max_workers=int(os.getenv("RUN_MAX_WORKERS", "4")),
-                   run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "120")),
+                   run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "300")),
                    run_registry_path=os.getenv("RUN_REGISTRY_PATH", ".runtime/runs.sqlite"),
                    kg_workflow_registry_path=os.getenv("KG_WORKFLOW_REGISTRY_PATH", ".runtime/kg-workflow.sqlite"))

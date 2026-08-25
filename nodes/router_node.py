@@ -1,8 +1,10 @@
 """Router Node：结构化分类，不调用业务工具。"""
 import logging
+import re
 from graph.state import GraphRAGState
 from models.llm import ModelFactory
 from services.observability import emit_event
+from services.resources import get_entity_service
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +16,33 @@ DOMAIN_KEYWORDS = {
     "industry": ("产业链", "产业节点", "产业事件", "产业全景"),
     "graph": ("间接关系", "多跳", "路径", "一跳邻居", "局部子图", "关系强度"),
 }
+
+_PERSON_NAME_RE = re.compile(r"^[\u4e00-\u9fff]{2,4}$")
+_NON_PERSON_SUFFIXES = ("大学", "学院", "研究院", "研究所", "实验室", "公司", "集团", "产业", "协会", "中心")
+
+
+def _looks_like_person_name(value: str) -> bool:
+    value = value.strip()
+    return bool(_PERSON_NAME_RE.fullmatch(value)) and not value.endswith(_NON_PERSON_SUFFIXES)
+
+
+def _reconcile_person_mentions(question: str, model_mentions: list[str], discovered: list[str]) -> list[str]:
+    """合并权威命中与可信模型结果，并补出“张伟和李明”中的并列姓名。
+
+    权威库只能证明某个名字存在，不能据此断言问题中的其他名字不存在。
+    """
+    mentions = list(dict.fromkeys(discovered + [item.strip() for item in model_mentions
+                                                if _looks_like_person_name(item)]))
+    for seed in tuple(mentions):
+        patterns = (
+            rf"{re.escape(seed)}[和与、]([\u4e00-\u9fff]{{2,4}})(?=的|在|之间|共同|合作|关系|[，。？！,!?]|$)",
+            rf"(?:^|[，。！？；,!?;\s])([\u4e00-\u9fff]{{2,4}})[和与、]{re.escape(seed)}(?=的|在|之间|共同|合作|关系|[，。？！,!?]|$)",
+        )
+        for pattern in patterns:
+            for candidate in re.findall(pattern, question):
+                if _looks_like_person_name(candidate) and candidate not in mentions:
+                    mentions.append(candidate)
+    return mentions
 
 
 def _apply_domain_guardrail(question: str, output):
@@ -30,6 +59,15 @@ def _apply_domain_guardrail(question: str, output):
 def router_node(state: GraphRAGState) -> dict:
     output = ModelFactory.structured_model().invoke_router(state["question"])
     output = _apply_domain_guardrail(state["question"], output)
+    # 权威库用于纠正机构误判，但不能静默删掉问题中尚未入库的人名。
+    try:
+        discovered = get_entity_service().mentions_in_text(state["question"])
+        mentions = ([] if output.primary_domain == "industry" else
+                    _reconcile_person_mentions(state["question"], output.entity_mentions, discovered))
+        if discovered or output.primary_domain == "industry" or mentions != output.entity_mentions:
+            output = output.model_copy(update={"entity_mentions": mentions})
+    except Exception:
+        logger.exception("Router 实体 mention 权威校正失败，保留模型结果")
     logger.info("Router: complexity=%s domain=%s mentions=%s", output.complexity, output.primary_domain, output.entity_mentions)
     emit_event("ROUTER_COMPLETED", thread_id=state.get("thread_id"), complexity=output.complexity, primary_domain=output.primary_domain,
                entity_mentions=output.entity_mentions)

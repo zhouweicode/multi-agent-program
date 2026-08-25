@@ -19,6 +19,13 @@ class IndustryService:
         return ({**chain, "node_details": [CHAIN_NODES[item].copy() for item in chain["nodes"]]}
                 if chain else {"error": "CHAIN_NOT_FOUND", "chain_id": chain_id})
 
+    def search_segments(self, query: str = "", limit: int = 10) -> list[dict]:
+        if self.repository:
+            return self.repository.search_industry_segments(query, limit)
+        rows = [{"segment_id": key, "name": value["name"], "event_count": 0}
+                for key, value in CHAIN_NODES.items() if not query or query in value["name"]]
+        return rows[:limit]
+
     def get_node_companies(self, node_id: str) -> list[dict]:
         if self.repository:
             return self.repository.get_node_companies(node_id)

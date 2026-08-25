@@ -88,6 +88,21 @@ class MySQLRepository:
             cursor.execute(sql, (mention, mention, max(1, min(limit, 50))))
             return [self._entity(row) for row in cursor.fetchall()]
 
+    def find_scholar_mentions(self, text: str, limit: int = 20) -> list[str]:
+        """Return active scholar names that occur verbatim in a user question."""
+        sql = """
+            SELECT name_zh
+            FROM dwd_scholar
+            WHERE status = 1 AND name_zh IS NOT NULL AND name_zh <> ''
+              AND %s LIKE CONCAT('%%', name_zh, '%%')
+            GROUP BY name_zh
+            ORDER BY CHAR_LENGTH(name_zh) DESC, name_zh
+            LIMIT %s
+        """
+        with self._cursor() as cursor:
+            cursor.execute(sql, (text, max(1, min(limit, 100))))
+            return [row["name_zh"] for row in cursor.fetchall()]
+
     def get_scholar(self, scholar_id: str) -> dict | None:
         sql = """
             SELECT scholar_id, name_zh, name_en, scholar_org_name_zh, scholar_org_name_en,
@@ -111,8 +126,7 @@ class MySQLRepository:
             cursor.execute(sql, (max(1, min(limit, 10000)), max(0, offset)))
             return [self._entity(row) for row in cursor.fetchall()]
 
-    @staticmethod
-    def _paper(row: dict, author_ids: list[str]) -> dict:
+    def _paper(self, row: dict, author_ids: list[str]) -> dict:
         year = row.get("year")
         return {
             "paper_id": str(row["paper_id"]),
@@ -121,7 +135,7 @@ class MySQLRepository:
             "authors": author_ids,
             "doi": row.get("doi"),
             "evidence_id": f"mysql_paper_{row['paper_id']}",
-            "source": "mysql:gkx.dwd_scholar_papers",
+            "source": f"mysql:{self.settings.mysql_database}.dwd_scholar_papers",
         }
 
     def get_author_papers(self, scholar_id: str, limit: int = 100) -> list[dict]:
@@ -184,7 +198,8 @@ class MySQLRepository:
         return [{"entity_id": scholar_id, "organization": organization,
                  "department": self._repair_text(row.get("work_experience_department_zh") or row.get("work_experience_department_en")),
                  "role": role, "start_year": start_year, "end_year": end_year,
-                 "evidence_id": f"mysql_employment_{scholar_id}", "source": "mysql:gkx.dwd_scholar"}]
+                 "evidence_id": f"mysql_employment_{scholar_id}",
+                 "source": f"mysql:{self.settings.mysql_database}.dwd_scholar"}]
 
     def get_education_history(self, scholar_id: str) -> list[dict]:
         sql = """
@@ -205,7 +220,8 @@ class MySQLRepository:
             return []
         return [{"entity_id": scholar_id, "institution": institution, "degree": degree,
                  "start_year": start_year, "end_year": end_year,
-                 "evidence_id": f"mysql_education_{scholar_id}", "source": "mysql:gkx.dwd_scholar"}]
+                 "evidence_id": f"mysql_education_{scholar_id}",
+                 "source": f"mysql:{self.settings.mysql_database}.dwd_scholar"}]
 
     def _scholar_names(self, scholar_ids: list[str]) -> list[str]:
         return [row["name"] for scholar_id in scholar_ids
@@ -229,7 +245,8 @@ class MySQLRepository:
                  "start_year": int(row["approval_year"]) if row.get("approval_year") else 0,
                  "end_year": int(row["approval_year"]) if row.get("approval_year") else 0,
                  "participant_ids": scholar_ids, "participants": json.loads(row["participants"] or "[]"),
-                 "evidence_id": f"mysql_project_{row['id']}", "source": "mysql:gkx.dwd_zh_project"}
+                 "evidence_id": f"mysql_project_{row['id']}",
+                 "source": f"mysql:{self.settings.mysql_database}.dwd_zh_project"}
                 for row in rows]
 
     def get_common_patents(self, scholar_ids: list[str], limit: int = 100) -> list[dict]:
@@ -249,5 +266,6 @@ class MySQLRepository:
         return [{"patent_id": row["patent_id"], "publication_number": row["publication_number"],
                  "title": self._repair_text(row.get("title")), "inventor_ids": scholar_ids,
                  "inventors": json.loads(row["inventors"] or "[]"),
-                 "evidence_id": f"mysql_patent_{row['patent_id']}", "source": "mysql:gkx.dwd_patent"}
+                 "evidence_id": f"mysql_patent_{row['patent_id']}",
+                 "source": f"mysql:{self.settings.mysql_database}.dwd_patent"}
                 for row in rows]

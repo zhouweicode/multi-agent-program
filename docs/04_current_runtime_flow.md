@@ -2,6 +2,11 @@
 
 本文说明当前第九阶段代码中，一个问题从前端进入系统、经过 LangGraph、领域 Agent、统一证据归一、校验和回答生成，最后通过 SSE 返回页面的完整过程。内容以当前代码为准，不是通用 LangGraph 教程。
 
+> 本地 `Milvus Lite` 在线读取由独立短进程执行，避免它的 gRPC/OpenMP 运行时与 API 内的模型
+> 运行时发生动态库冲突。远程 Milvus URI 仍使用进程内客户端。在线实体解析建议配置
+> `ENTITY_BACKEND=hybrid`，由 MySQL 精确召回和 Milvus 语义召回融合；合成图查询建议配置
+> `NEO4J_MANAGED_ONLY=true`，只读取 `synthetic=true` 的 Workflow 受管子图。
+
 ## 1. 总体流程
 
 ```mermaid

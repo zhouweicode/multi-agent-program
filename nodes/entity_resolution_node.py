@@ -14,11 +14,14 @@ def entity_resolution_node(state: GraphRAGState) -> dict:
             continue
         rows = service.search(mention, context=state.get("question", ""))
         candidates[mention] = rows
-        selected_id = service.auto_resolve(rows)
+        # 身份解析必须至少有一个姓名精确匹配。Milvus 的相似结果只可作为建议，
+        # 不能把未入库的人名静默替换成另一个真实人物。
+        exact_rows = [row for row in rows if row.get("exact_match")]
+        selected_id = service.auto_resolve(exact_rows)
         if selected_id:
             resolved[mention] = selected_id
-        elif rows:
-            ambiguous[mention] = rows
+        elif exact_rows:
+            ambiguous[mention] = exact_rows
         else:
             not_found.append(mention)
 
@@ -46,10 +49,17 @@ def entity_resolution_node(state: GraphRAGState) -> dict:
 
     logger.info("Entity Resolution: resolved=%s", resolved)
     emit_event("ENTITY_RESOLUTION_COMPLETED", thread_id=state.get("thread_id"), resolved_entities=resolved)
-    backend_ids = {
-        mention: service.mapping.backend_ids(entity_id)
-        for mention, entity_id in resolved.items()
-    }
+    backend_ids = {}
+    for mention, entity_id in resolved.items():
+        candidate = next((row for row in candidates.get(mention, [])
+                          if row.get("entity_id") == entity_id), {})
+        mapped = service.mapping.backend_ids(entity_id)
+        known = mapped or candidate.get("backend_ids") or {}
+        backend_ids[mention] = {
+            "mysql": known.get("mysql", entity_id),
+            "neo4j": known.get("neo4j", entity_id),
+            "milvus": known.get("milvus", entity_id),
+        }
     return {"resolved_entities": resolved, "entity_backend_ids": backend_ids,
             "entity_candidates": candidates, "awaiting_user_selection": False,
             "entity_resolution_status": "RESOLVED", "unresolved_mentions": []}

@@ -21,7 +21,7 @@
 - 节点轨迹包含脱敏、限长的输入输出快照，并限制线程数和单线程事件数。
 - Entity Resolution 支持 `hybrid`：MySQL 权威精确召回、BGE-M3 + Milvus 语义补召回、上下文重排和置信阈值。
 - 后台 Run 状态、interrupt、错误和耗时持久化到独立 SQLite Registry，并支持取消和超时。
-- Tool Observation 在写入 Shared State 前转换为统一证据记录，最终答案可展示证据编号。
+- Tool Observation 在写入 Shared State 前转换为统一证据记录；证据明细保留在 State 与执行轨迹中供审计，最终答案不展开内部证据编号。
 - 企业和产业领域可独立切换到 Neo4j，并复用 GraphService 的同一 Driver。
 
 ## 领域能力
@@ -365,6 +365,18 @@ python -m scripts.evaluate_stage9_e2e
 第七阶段运行时和任务契约详解见 [docs/03_stage7_runtime.md](docs/03_stage7_runtime.md)。
 
 当前项目从 API、LangGraph、实体消歧、Agent Tool Calling 到 SSE 返回的完整流程见 [docs/04_current_runtime_flow.md](docs/04_current_runtime_flow.md)。
+
+真实后端启动后可执行在线查询黑盒验收：
+
+```bash
+python -m scripts.smoke_online_query \
+  --base-url http://127.0.0.1:8000 \
+  --question '南京科技大学042的何伟发表过哪些论文？'
+
+# 对重名问题自动选择首个候选，覆盖 interrupt/resume 分支
+python -m scripts.smoke_online_query \
+  --question '何伟发表过哪些论文？' --auto-select-first
+```
 
 第八阶段混合实体解析、统一证据与 Run 治理见 [docs/05_stage8_hybrid_resolution.md](docs/05_stage8_hybrid_resolution.md)。
 

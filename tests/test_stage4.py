@@ -2,6 +2,8 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 from agents.achievement_agent import build_achievement_agent
+from agents.base import ToolCallingDomainAgent
+from langchain_core.tools import tool
 from app.main import app
 from models.llm import ModelFactory, MockToolCallingModel, OpenAIStructuredModel
 from models.schemas import RouterOutput
@@ -42,6 +44,31 @@ def test_domain_agent_stops_when_model_returns_no_tool_calls():
     result = agent.run("无需工具", {})
     assert result["tool_calls"] == []
     assert result["facts"] == []
+
+
+def test_domain_agent_enforces_total_tool_call_budget():
+    @tool
+    def bounded_tool(value: int) -> dict:
+        """Return a test value."""
+        return {"value": value}
+
+    class BurstModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            if any(isinstance(item, ToolMessage) for item in messages):
+                return AIMessage(content='{"status":"complete"}')
+            return AIMessage(content="burst", tool_calls=[
+                {"name": "bounded_tool", "args": {"value": index}, "id": f"call-{index}", "type": "tool_call"}
+                for index in range(10)
+            ])
+
+    agent = ToolCallingDomainAgent("bounded", BurstModel(), [bounded_tool], max_tool_calls=3)
+    result = agent.run("测试预算", {})
+    assert len(result["tool_calls"]) == 3
+    assert len(result["facts"]) == 3
+    assert result["errors"] == ["工具调用预算已达上限: 3"]
 
 
 def test_replan_only_schedules_missing_domain():
