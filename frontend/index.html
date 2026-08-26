@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>科技知识图谱 · Multi-Agent GraphRAG</title>
-  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/layout-fix.css">
+  <link rel="icon" href="/static/favicon.svg?v=20260826-2" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v=20260826-2">
+  <link rel="stylesheet" href="/static/layout-fix.css?v=20260826-2">
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -46,8 +46,15 @@
             <button type="button" data-example="分析深圳科技大学003的高芳与上海科技大学002的赵强之间的多跳间接关系和路径强度。">间接关系</button>
             <button type="button" data-example="判断深圳科技大学003的高芳和上海科技大学002的赵强是不是长期稳定的核心科研合作伙伴。">合作验证</button>
             <button type="button" data-example="基于论文、项目、专利、任职和图谱路径证据，验证深圳科技大学003的高芳与上海科技大学002的赵强是否存在稳定的产学研合作关系，并说明证据不足之处。">综合验证</button>
+            <button type="button" data-example="联网查证 Neo4j GraphRAG 当前支持的检索方式，列出官网等公开来源，并说明哪些内容还需要进一步验证。">联网研究</button>
           </div>
-          <label class="replan-label">最大重规划 <input id="maxReplans" type="number" min="0" max="10" value="2"></label>
+          <div class="query-options">
+            <button id="webSearchToggle" class="web-search-toggle enabled" type="button" aria-pressed="true" title="点击关闭联网搜索">
+              <span class="web-toggle-dot" aria-hidden="true"></span>
+              <span id="webSearchToggleLabel">联网搜索：已开启</span>
+            </button>
+            <label class="replan-label">最大重规划 <input id="maxReplans" type="number" min="0" max="10" value="2"></label>
+          </div>
         </div>
       </form>
     </section>
@@ -71,6 +78,7 @@
               <span data-agent="talent_agent">Talent</span><span data-agent="achievement_agent">Achievement</span>
               <span data-agent="enterprise_agent">Enterprise</span><span data-agent="industry_agent">Industry</span>
               <span data-agent="graph_reasoning_agent">Graph</span>
+              <span data-agent="web_research_agent">Web</span>
             </div>
             <span class="connector">→</span>
             <div class="flow-node" data-node="merge"><i>06</i><strong>Merge</strong><small>结果与证据汇总</small></div>
@@ -93,6 +101,13 @@
         <section id="answerPanel" class="panel answer-panel hidden">
           <div class="section-heading"><div><span class="section-index">03</span><h2>最终答案</h2></div><span id="validationBadge" class="pass-badge">VALIDATED</span></div>
           <div id="answerText" class="answer-text"></div>
+          <section id="webSourcesPanel" class="web-sources hidden" aria-labelledby="webSourcesTitle">
+            <div class="web-sources-heading">
+              <h3 id="webSourcesTitle">联网参考来源</h3>
+              <span id="webSourcesCount"></span>
+            </div>
+            <div id="webSourceCards" class="web-source-cards"></div>
+          </section>
           <div id="entityChips" class="entity-chips"></div>
         </section>
       </div>
@@ -124,6 +139,6 @@
     </div>
   </dialog>
   <footer>GraphRAG Studio · 数据库返回什么，答案就只说什么</footer>
-  <script src="/static/app.js" defer></script>
+  <script src="/static/app.js?v=20260826-2" defer></script>
 </body>
 </html>

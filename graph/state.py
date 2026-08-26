@@ -5,6 +5,7 @@ from typing import Any, TypedDict
 class GraphRAGState(TypedDict, total=False):
     thread_id: str
     question: str
+    web_search_enabled: bool
     intent: str
     complexity: str
     primary_domain: str
@@ -24,6 +25,7 @@ class GraphRAGState(TypedDict, total=False):
     enterprise_result: dict[str, Any]
     industry_result: dict[str, Any]
     graph_result: dict[str, Any]
+    web_result: dict[str, Any]
     evidence: list[dict[str, Any]]
     validation_result: dict[str, Any]
     verification_result: dict[str, Any]

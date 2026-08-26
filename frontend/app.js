@@ -1,5 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { threadId: null, cursor: 0, events: [], eventSource: null, streaming: false, graphState: {}, running: false, stopping: false };
+const state = { threadId: null, cursor: 0, events: [], eventSource: null, streaming: false, graphState: {}, running: false, stopping: false, webSearchEnabled: true };
 
 const eventInfo = {
   QUERY_STARTED: ["query", "查询已进入 LangGraph"], ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
@@ -19,6 +19,7 @@ const nodeLabels = {
   talent_agent: "TalentAgent", achievement_agent: "AchievementAgent",
   enterprise_agent: "EnterpriseRelationAgent", industry_agent: "IndustryChainAgent",
   graph_reasoning_agent: "GraphReasoningAgent", merge: "Merge", validator: "Rule Validator",
+  web_research_agent: "WebResearchAgent",
   verification_agent: "VerificationAgent", answer: "Answer"
 };
 
@@ -31,8 +32,16 @@ function setSubmitMode(mode) {
   button.classList.toggle("stop-mode", state.running);
   button.classList.toggle("stopping", state.stopping);
   button.disabled = state.stopping;
+  $("#webSearchToggle").disabled = state.running;
   $("#submitLabel").textContent = mode === "running" ? "停止分析" : mode === "stopping" ? "正在停止" : "开始分析";
   $("#submitIcon").textContent = mode === "running" ? "■" : mode === "stopping" ? "…" : "→";
+}
+function renderWebSearchToggle() {
+  const button = $("#webSearchToggle");
+  button.classList.toggle("enabled", state.webSearchEnabled);
+  button.setAttribute("aria-pressed", String(state.webSearchEnabled));
+  button.title = state.webSearchEnabled ? "点击关闭联网搜索" : "点击开启联网搜索";
+  $("#webSearchToggleLabel").textContent = `联网搜索：${state.webSearchEnabled ? "已开启" : "已关闭"}`;
 }
 function finishRun(statusText) {
   setSubmitMode("idle");
@@ -164,6 +173,37 @@ function showCandidates(interrupt) {
   $("#selectionPanel").classList.remove("hidden"); $("#selectionPanel").scrollIntoView({behavior:"smooth", block:"center"});
 }
 
+function renderWebSources(graphState) {
+  const panel = $("#webSourcesPanel");
+  const root = $("#webSourceCards");
+  root.innerHTML = "";
+  const rows = [];
+  const seen = new Set();
+  for (const fact of graphState.web_result?.facts || []) {
+    if (fact.tool !== "search_web") continue;
+    for (const row of fact.data?.results || []) {
+      if (!row?.url || seen.has(row.url) || !/^https:\/\//i.test(row.url)) continue;
+      seen.add(row.url); rows.push(row);
+    }
+  }
+  if (!rows.length) { panel.classList.add("hidden"); return; }
+  rows.slice(0, 3).forEach((row, index) => {
+    const card = document.createElement("article"); card.className = "web-source-card";
+    const marker = document.createElement("span"); marker.className = "source-index"; marker.textContent = String(index + 1).padStart(2, "0");
+    const body = document.createElement("div");
+    const link = document.createElement("a"); link.href = row.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.textContent = row.title || "未命名网页";
+    const meta = document.createElement("div"); meta.className = "source-meta";
+    try { meta.textContent = new URL(row.url).hostname; } catch { meta.textContent = "公开网页"; }
+    const snippet = document.createElement("p");
+    const cleanSnippet = String(row.snippet || "").replace(/\s+/g, " ").replace(/\|+/g, " ").trim();
+    snippet.textContent = cleanSnippet ? `${cleanSnippet.slice(0, 100)}${cleanSnippet.length > 100 ? "…" : ""}` : "该来源未返回摘要。";
+    body.append(link, meta, snippet); card.append(marker, body); root.appendChild(card);
+  });
+  $("#webSourcesCount").textContent = `展示 ${Math.min(rows.length, 3)} / ${rows.length} 条`;
+  panel.classList.remove("hidden");
+}
+
 function renderResult(payload) {
   state.graphState = payload.state || {}; $("#stateJson").textContent = JSON.stringify(state.graphState, null, 2);
   $("#answerText").textContent = payload.final_answer || state.graphState.final_answer || "暂无答案";
@@ -171,6 +211,7 @@ function renderResult(payload) {
   badge.textContent = validation.valid ? "VALIDATED" : "VALIDATION FAILED"; badge.style.color = validation.valid ? "var(--green)" : "var(--danger)";
   const chips = $("#entityChips"); chips.innerHTML = "";
   Object.entries(state.graphState.resolved_entities || {}).forEach(([name, id]) => { const chip = document.createElement("span"); chip.textContent = `${name} · ${id}`; chips.appendChild(chip); });
+  renderWebSources(state.graphState);
   $("#answerPanel").classList.remove("hidden"); $("#answerPanel").scrollIntoView({behavior:"smooth", block:"start"}); finishRun("已完成");
 }
 
@@ -188,7 +229,7 @@ $("#queryForm").addEventListener("submit", async event => {
   if (state.running) { await cancelCurrentAnalysis(); return; }
   resetUI(); state.threadId = newThreadId(); setSubmitMode("running");
   const button = $("#submitBtn"); button.disabled = true;
-  try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value)})}); await handleResponse(response); }
+  try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value), web_search_enabled:state.webSearchEnabled})}); await handleResponse(response); }
   catch (error) { finishRun("执行失败"); alert(`执行失败：${error.message}`); stopEventStream(); }
   finally { if (!state.stopping) button.disabled = false; }
 });
@@ -215,8 +256,14 @@ async function cancelCurrentAnalysis() {
 }
 
 document.querySelectorAll("[data-example]").forEach(button => button.addEventListener("click", () => { $("#question").value = button.dataset.example; $("#question").focus(); }));
+$("#webSearchToggle").addEventListener("click", () => {
+  if (state.running) return;
+  state.webSearchEnabled = !state.webSearchEnabled;
+  renderWebSearchToggle();
+});
 $("#copyState").addEventListener("click", async () => { await navigator.clipboard.writeText($("#stateJson").textContent); $("#copyState").textContent = "已复制"; setTimeout(() => $("#copyState").textContent = "复制", 1200); });
 $("#closeEventModal").addEventListener("click", () => $("#eventModal").close());
 $("#eventModal").addEventListener("click", event => { if (event.target === $("#eventModal")) $("#eventModal").close(); });
 
 fetch("/health").then(response => response.json()).then(payload => { $("#healthDot").classList.add("online"); $("#healthText").textContent = `Stage ${payload.stage} · ${payload.embedding_provider} · ${payload.entity_backend}`; }).catch(() => { $("#healthText").textContent = "系统离线"; });
+renderWebSearchToggle();

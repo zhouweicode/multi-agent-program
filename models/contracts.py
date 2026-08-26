@@ -6,6 +6,7 @@ AGENT_DOMAINS = {
     "enterprise_agent": "enterprise",
     "industry_agent": "industry",
     "graph_reasoning_agent": "graph",
+    "web_research_agent": "web",
 }
 
 FACT_TYPE_TO_TOOL = {
@@ -25,6 +26,7 @@ FACT_TYPE_TO_TOOL = {
     "path": "find_path",
     "k_hop_subgraph": "k_hop_expand",
     "path_strength": "calculate_path_strength",
+    "web_sources": "search_web",
 }
 
 
@@ -40,4 +42,5 @@ DEFAULT_REQUIRED_FACT_TYPES = {
     "enterprise_agent": ["company_roles", "company_projects", "company_patents"],
     "industry_agent": ["chain_structure", "node_companies", "node_events", "ranked_events"],
     "graph_reasoning_agent": ["neighbors", "path", "path_strength"],
+    "web_research_agent": ["web_sources"],
 }

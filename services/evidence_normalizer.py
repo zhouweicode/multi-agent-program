@@ -1,10 +1,11 @@
 """把领域 Tool 返回值归一为统一 EvidenceRecord。"""
 from __future__ import annotations
 
+import hashlib
 from typing import Any
+from urllib.parse import urlparse
 
 from models.schemas import EvidenceRecord
-
 
 FACT_TYPES = {
     "get_person_profile": "person_profile",
@@ -24,6 +25,7 @@ FACT_TYPES = {
     "get_neighbors": "graph_relation",
     "find_path": "graph_path",
     "calculate_path_strength": "graph_path_strength",
+    "search_web": "external_web_source",
 }
 
 
@@ -54,6 +56,29 @@ def _record_id(row: dict[str, Any], evidence_id: str) -> str:
 
 def normalize_tool_output(tool_name: str, output: Any, fallback_entity_ids: list[str]) -> list[dict]:
     """只为具有 evidence_id 的事实建证据；聚合统计不伪造原始证据。"""
+    if tool_name == "search_web" and isinstance(output, dict):
+        provider = str(output.get("provider") or "unknown")
+        records = []
+        for row in output.get("results", []):
+            if not isinstance(row, dict) or not row.get("url"):
+                continue
+            url = str(row["url"])
+            evidence_id = "web_" + hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
+            hostname = urlparse(url).hostname or "unknown"
+            content = dict(row)
+            content.update({"query": output.get("query", ""), "provider": provider})
+            records.append(EvidenceRecord(
+                evidence_id=evidence_id,
+                fact_type=FACT_TYPES[tool_name],
+                source_type="web",
+                source_name=f"web:{hostname}",
+                source_record_id=url,
+                entity_ids=list(fallback_entity_ids),
+                event_time=row.get("published_at"),
+                content=content,
+                source_tool=tool_name,
+            ).model_dump())
+        return records
     rows = output if isinstance(output, list) else [output]
     if tool_name in {"find_path", "calculate_path_strength"} and isinstance(output, dict):
         path = output.get("path", output)

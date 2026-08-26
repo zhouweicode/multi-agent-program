@@ -7,7 +7,7 @@
 ## 架构边界
 
 - Router、Entity Resolution、Supervisor、Merge、Rule Validator、Answer 都是 LangGraph Node，不是 Agent。
-- 已实现 TalentOrganizationAgent、ResearchAchievementAgent、EnterpriseRelationAgent、IndustryChainAgent 和 GraphReasoningAgent 五个领域 Agent。
+- 已实现 TalentOrganizationAgent、ResearchAchievementAgent、EnterpriseRelationAgent、IndustryChainAgent、GraphReasoningAgent 和 WebResearchAgent 六个领域 Agent。
 - 每个 Agent 使用局部 `SystemMessage → AIMessage.tool_calls → ToolMessage → Model` 循环，并通过工具白名单阻止跨领域调用。
 - `ModelFactory` 根据 `MODEL_PROVIDER` 返回离线 Mock 或真实 OpenAI-Compatible ChatModel，业务代码不绑定具体模型 SDK。
 - Entity Resolution 使用 LangGraph `interrupt()` 暂停，使用同一 `thread_id` 和 `Command(resume=...)` 恢复。
@@ -23,6 +23,9 @@
 - 后台 Run 状态、interrupt、错误和耗时持久化到独立 SQLite Registry，并支持取消和超时。
 - Tool Observation 在写入 Shared State 前转换为统一证据记录；证据明细保留在 State 与执行轨迹中供审计，最终答案不展开内部证据编号。
 - 企业和产业领域可独立切换到 Neo4j，并复用 GraphService 的同一 Driver。
+- 领域Tool支持`local/mcp`双传输：local模式进程内调用；MCP模式从独立Server动态发现白名单工具并通过Streamable HTTP执行。
+- MCP Server复用现有Service/Repository，公开人才、成果、企业、产业、图检索、证据验证和可选联网搜索共七组能力；LangGraph控制节点保持本地。
+- WebResearchAgent仅在问题明确要求联网、最新资料、官网、新闻或外部查证时执行；网页结果作为带URL的外部候选证据，不覆盖图谱事实，也不自动回写图谱。
 
 ## 领域能力
 
@@ -33,6 +36,7 @@
 | EnterpriseRelationAgent | `get_person_company_roles`、`get_company_projects`、`get_company_patents` |
 | IndustryChainAgent | `get_chain_structure`、`get_node_companies`、`get_node_events`、`rank_top_events` |
 | GraphReasoningAgent | `get_neighbors`、`find_path`、`k_hop_expand`、`calculate_path_strength` |
+| WebResearchAgent | `search_web`（Brave/Tavily，可通过 local 或 MCP 调用） |
 | VerificationAgent | `verify_evidence`、`check_source`、`get_cooperation_timeline`、`validate_relation`、`check_constraints` |
 
 ## 第五阶段数据仓储
@@ -89,7 +93,7 @@ INDUSTRY_BACKEND=neo4j
 
 统一证据结构包含 `evidence_id`、`fact_type`、`source_type`、`source_name`、
 `source_record_id`、`entity_ids`、`event_time`、`content` 和 `source_tool`。Merge Node 按
-`evidence_id` 去重，Rule Validator 校验证据结构，Answer Node 展示实际引用编号。
+`evidence_id` 去重，Rule Validator 校验证据结构，Answer Node保留可读结论与外部来源URL，不展开内部证据编号。
 
 MySQL 到 Neo4j 同步默认只预览，必须显式增加 `--apply` 才写入：
 
@@ -183,9 +187,27 @@ pytest -q
 uvicorn app.main:app --reload
 ```
 
+默认`TOOL_TRANSPORT=local`，行为与原有版本一致。需要使用MCP时，先启动工具服务：
+
+```bash
+.venv/bin/python -m mcp_runtime.server
+```
+
+再在另一个终端启动主应用：
+
+```bash
+export TOOL_TRANSPORT=mcp
+export MCP_SERVER_URL=http://127.0.0.1:8100/mcp
+.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+可通过`.venv/bin/python -m scripts.smoke_mcp_tools`列出远端工具。完整边界、白名单、联网搜索配置与故障行为见
+[`docs/08_mcp_tool_transport.md`](docs/08_mcp_tool_transport.md)。
+
 启动后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000) 打开 GraphRAG Studio 前端。页面支持：
 
 - 输入自然语言问题并创建独立 `thread_id`；
+- 使用“联网搜索”按钮按查询开启或关闭 WebResearchAgent；关闭时后端不会构建联网 Agent 或调用 Tavily/MCP；
 - 实时查看 Router、Entity Resolution、Supervisor、Domain Agent、Tool、Merge、Validator、Verification 和 Answer 事件；
 - 在检测到同名专家时选择候选 `entity_id`，从 LangGraph interrupt 中断点恢复；
 - 查看最终中文答案、规则校验状态、实体 ID 和完整 `GraphRAGState`；

@@ -4,7 +4,6 @@ from fastapi.testclient import TestClient
 from app.main import app
 from tests.helpers import wait_for_run
 
-
 client = TestClient(app)
 
 
@@ -21,9 +20,16 @@ def test_frontend_index_and_assets_are_served():
     assert "产企关联" in page.text
     assert "间接关系" in page.text
     assert "综合验证" in page.text
+    assert "联网研究" in page.text
+    assert 'data-agent="web_research_agent"' in page.text
+    assert 'id="webSearchToggle"' in page.text
+    assert 'id="webSourcesPanel"' in page.text
+    assert "联网搜索：已开启" in page.text
     assert "深圳科技大学003的高芳" in page.text
     assert "上海科技大学002的赵强" in page.text
     assert "李明" not in page.text
+    assert '/static/app.js?v=20260826-2' in page.text
+    assert page.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert client.get("/static/styles.css").status_code == 200
     layout_css = client.get("/static/layout-fix.css")
     assert layout_css.status_code == 200
@@ -31,8 +37,26 @@ def test_frontend_index_and_assets_are_served():
     assert "grid-column: 1 / -1" in layout_css.text
     script = client.get("/static/app.js")
     assert script.status_code == 200
+    assert script.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert "停止分析" in script.text
     assert "/cancel" in script.text
+    assert "WebResearchAgent" in script.text
+    assert "web_search_enabled:state.webSearchEnabled" in script.text
+    assert "renderWebSources" in script.text
+
+
+def test_query_api_persists_web_search_switch():
+    thread_id = "frontend-web-switch-off"
+    response = client.post("/queries", json={
+        "question": "查询人工智能产业链最新新闻并联网查证。",
+        "thread_id": thread_id,
+        "web_search_enabled": False,
+    })
+    assert response.status_code == 202
+    completed = wait_for_run(client, thread_id, {"COMPLETED"})
+    assert completed["state"]["web_search_enabled"] is False
+    assert completed["state"].get("web_result") is None
+    assert completed["state"]["industry_result"]["agent"] == "industry_agent"
 
 
 def test_event_api_exposes_query_execution_trace():

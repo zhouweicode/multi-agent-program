@@ -4,10 +4,12 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import Any
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from models.schemas import RouterOutput, SupervisorPlan, PlannedTask
-from models.settings import Settings
+
 from models.contracts import DEFAULT_REQUIRED_FACT_TYPES
+from models.schemas import PlannedTask, RouterOutput, SupervisorPlan
+from models.settings import Settings
 
 
 class MockStructuredModel:
@@ -20,6 +22,7 @@ class MockStructuredModel:
             "enterprise": any(x in question for x in ("企业", "公司", "顾问")),
             "industry": any(x in question for x in ("产业链", "产业事件", "TOP", "节点")),
             "graph": any(x in question for x in ("间接关系", "多跳", "路径", "邻居", "关系强度")),
+            "web": any(x in question for x in ("联网", "网络搜索", "外部来源", "公开资料", "官网", "新闻", "最新", "近期", "实时", "查证")),
         }
         matched = [name for name, hit in domain_hits.items() if hit]
         complex_query = "综合" in question or len(matched) > 1
@@ -36,6 +39,8 @@ class MockStructuredModel:
             ("enterprise", "enterprise_agent", "查询专家与企业的角色、项目和专利关系", ("企业", "公司", "顾问")),
             ("industry", "industry_agent", "查询产业链结构、企业和重点事件", ("产业", "产业链", "事件", "TOP")),
             ("graph", "graph_reasoning_agent", "查询实体间路径、多跳关系和关系强度", ("间接", "多跳", "路径", "关系强度", "所有可能")),
+            ("web", "web_research_agent", "搜索公开网页来源，并提取可追溯的外部候选证据",
+             ("联网", "网络搜索", "外部来源", "公开资料", "官网", "新闻", "最新", "近期", "实时", "查证")),
         ]
         missing_domains = set((validation_result or {}).get("missing_domains", []))
         missing_evidence = (verification_result or {}).get("missing_evidence", [])
@@ -101,6 +106,7 @@ class MockToolCallingModel:
             "graph": [("get_neighbors", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001"}),
                       ("find_path", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2}),
                       ("calculate_path_strength", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2})],
+            "web": [("search_web", {"query": goal, "max_results": 5})],
         }
         completed = len([msg for msg in messages if isinstance(msg, ToolMessage)])
         specs = [(name, args) for name, args in call_specs[self.domain] if name in self.allowed_tools]
@@ -212,6 +218,7 @@ class OpenAIStructuredModel:
 - enterprise：专家与企业的任职、顾问、企业项目、企业专利和技术合作；
 - industry：产业链结构、产业节点、产业企业、产业产品和产业事件；
 - graph：一跳邻居、多跳路径、间接关系、局部子图和关系强度。
+- web：联网搜索、最新动态、官网或新闻等公开资料，以及对外部来源的查证。
 示例：“张伟发表过哪些论文？”必须归为 achievement；“张伟在哪里工作？”必须归为 talent。
 只涉及一个领域时 complexity=simple；需要多个领域协作时 complexity=complex。""",
             {"question": question},
@@ -227,6 +234,7 @@ class OpenAIStructuredModel:
 领域边界：职业/任职/同事归 talent_agent；论文/科研项目/学术合作归 achievement_agent；
 企业角色/企业项目/企业专利/产业合作归 enterprise_agent；产业链结构/产业节点/产业事件归 industry_agent；
 只有明确询问路径、多跳、间接关系、邻居或关系强度时才调用 graph_reasoning_agent。
+只有明确要求联网、最新公开资料、官网、新闻或外部查证时才调用 web_research_agent。
 “综合分析两人的学术、职业和产业合作关系”应并行调用 talent_agent、achievement_agent、enterprise_agent，
 不能因为出现“关系”二字就调用 graph_reasoning_agent。required_fact_types 表示任务必须返回的业务事实类型，
 required_entity_ids 必须填写本次输入中的 canonical entity ID；Node 会用确定性领域契约再次规范化。""",

@@ -1,39 +1,49 @@
 """最小 Tool-Calling Agent 循环，严格限制每个 Agent 可见工具。"""
-import logging
 import json
+import logging
 from typing import Any
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
 from models.schemas import DomainResult, ToolCallSpec
-from services.observability import emit_event
 from services.evidence_normalizer import normalize_tool_output
+from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
 
 
 class ToolCallingDomainAgent:
     def __init__(self, name: str, model: Any, tools: list[Any], max_steps: int = 12,
-                 max_tool_calls: int = 16):
+                 max_tool_calls: int = 16, final_response_instruction: str = ""):
         self.name = name
         self.model = model.bind_tools(tools)
         self.tools = {item.name: item for item in tools}
         self.max_steps = max_steps
         self.max_tool_calls = max_tool_calls
+        self.final_response_instruction = final_response_instruction
 
     def run(self, goal: str, resolved_entities: dict[str, str], thread_id: str | None = None) -> dict:
         facts, evidence, errors, calls = [], [], [], []
+        final_response = None
         relation_instruction = ("当前包含多个已解析实体，目标是分析实体之间的关系。优先调用共同、重叠、合作、"
             "路径或聚合类工具取得直接关系证据；不要只返回彼此独立的个人资料。"
                                 if len(resolved_entities) > 1 else "当前是单实体查询，调用面向单个实体的工具。")
         messages = [
             SystemMessage(content=f"你是 {self.name}。只使用已绑定工具完成目标；每次根据 ToolMessage 决定下一步，"
                                   f"完成后返回无 tool_calls 的消息。{relation_instruction}必须取得足以回答目标的证据后才能结束。"
-                                  f"整个任务最多调用 {self.max_tool_calls} 次工具；先检索 ID，再只查询最相关的少量对象，禁止穷举全部节点。"),
+                                  f"整个任务最多调用 {self.max_tool_calls} 次工具；先检索 ID，再只查询最相关的少量对象，禁止穷举全部节点。"
+                                  f"{self.final_response_instruction}"),
             HumanMessage(content=json.dumps({"goal": goal, "resolved_entities": resolved_entities}, ensure_ascii=False)),
         ]
         for step in range(self.max_steps):
             message = self.model.invoke(messages)
             messages.append(message)
             if not message.tool_calls:
+                if isinstance(message.content, str):
+                    final_response = message.content.strip() or None
+                elif isinstance(message.content, list):
+                    parts = [str(item.get("text", "")) for item in message.content if isinstance(item, dict)]
+                    final_response = "\n".join(part for part in parts if part).strip() or None
                 break
             for call in message.tool_calls:
                 if len(calls) >= self.max_tool_calls:
@@ -70,4 +80,5 @@ class ToolCallingDomainAgent:
         summary = f"{self.name} 完成 {len(calls)} 次工具调用，得到 {len(facts)} 组结果"
         emit_event("AGENT_COMPLETED", thread_id=thread_id, agent_name=self.name,
                    tool_call_count=len(calls), fact_count=len(facts), error_count=len(errors))
-        return DomainResult(agent=self.name, summary=summary, facts=facts, evidence=evidence, tool_calls=calls, errors=errors).model_dump()
+        return DomainResult(agent=self.name, summary=summary, response=final_response,
+                            facts=facts, evidence=evidence, tool_calls=calls, errors=errors).model_dump()

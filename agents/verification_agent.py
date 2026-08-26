@@ -2,17 +2,19 @@
 import json
 import logging
 import re
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+
 from models.llm import ModelFactory
-from models.schemas import VerificationResult, ToolCallSpec
-from tools.verification_tools import verify_evidence, check_source, validate_relation, check_constraints, get_cooperation_timeline
+from models.schemas import ToolCallSpec, VerificationResult
+from tools.provider import get_tools
 
 logger = logging.getLogger(__name__)
 
 
 class VerificationAgent:
     def __init__(self, max_steps: int = 8):
-        tools = [verify_evidence, check_source, validate_relation, check_constraints, get_cooperation_timeline]
+        tools = get_tools("verification")
         self.tools = {tool.name: tool for tool in tools}
         self.model = ModelFactory.verification_model().bind_tools(tools)
         self.max_steps = max_steps
@@ -30,7 +32,7 @@ class VerificationAgent:
         text = text.strip()
         if not text:
             raise ValueError("Verification 模型返回空内容")
-        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
         if fenced:
             text = fenced.group(1)
         try:

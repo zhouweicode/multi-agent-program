@@ -1,10 +1,15 @@
 """Rule Validator：纯 Python 确定性校验，不调用 LLM。"""
 import logging
+
 from graph.state import GraphRAGState
+from models.contracts import (
+    AGENT_DOMAINS,
+    DEFAULT_REQUIRED_FACT_TYPES,
+    FACT_TYPE_TO_TOOL,
+)
 from models.schemas import ValidationResult
-from services.resources import get_entity_service, get_evidence_service
 from services.observability import emit_event
-from models.contracts import AGENT_DOMAINS, DEFAULT_REQUIRED_FACT_TYPES, FACT_TYPE_TO_TOOL
+from services.resources import get_entity_service, get_evidence_service
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +25,7 @@ def validator_node(state: GraphRAGState) -> dict:
                         if state.get("complexity") == "complex" else {state.get("primary_domain", "achievement")})
     domain_results = (("talent", state.get("talent_result")), ("achievement", state.get("achievement_result")),
                       ("enterprise", state.get("enterprise_result")), ("industry", state.get("industry_result")),
-                      ("graph", state.get("graph_result")))
+                      ("graph", state.get("graph_result")), ("web", state.get("web_result")))
     for domain, result in domain_results:
         if result is None and domain in expected_domains:
             missing.append(domain)
@@ -52,10 +57,9 @@ def validator_node(state: GraphRAGState) -> dict:
         elif not item.get("content") and not evidence_service.exists(item["evidence_id"], list(entity_ids)):
             errors.append(f"evidence_id 不存在: {item['evidence_id']}")
     achievement = state.get("achievement_result", {})
-    author_papers, common_papers, common_projects, aggregate = None, None, None, None
+    common_papers, common_projects, aggregate = None, None, None
     for fact in achievement.get("facts", []):
         if fact["tool"] == "get_author_papers":
-            author_papers = fact["data"]
             for paper in fact["data"]:
                 if not entity_ids.intersection(set(paper.get("authors", []))):
                     errors.append(f"作者论文归属校验失败: {paper.get('paper_id', 'UNKNOWN')}")
@@ -108,7 +112,42 @@ def validator_node(state: GraphRAGState) -> dict:
             scores = [row["importance"] for row in fact["data"]]
             if scores != sorted(scores, reverse=True):
                 errors.append("TOP 产业事件未按重要度降序排列")
-    result = ValidationResult(valid=not errors and not missing, needs_replan=bool(missing or errors), missing_domains=missing, errors=errors)
+    web_result = state.get("web_result", {})
+    for fact in web_result.get("facts", []):
+        if fact.get("tool") != "search_web":
+            continue
+        data = fact.get("data")
+        if not isinstance(data, dict):
+            errors.append("联网搜索返回格式无效")
+            continue
+        if data.get("error"):
+            errors.append(f"联网搜索失败: {data['error']}")
+            continue
+        rows = data.get("results")
+        if data.get("provider") not in {"brave", "tavily"}:
+            errors.append("联网搜索来源提供方无效")
+        if not isinstance(rows, list) or data.get("result_count") != len(rows):
+            errors.append("联网搜索结果计数与数据不一致")
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not str(row.get("url", "")).startswith("https://"):
+                errors.append("联网证据 URL 无效或不是 HTTPS")
+            if not row.get("title") or not row.get("snippet"):
+                errors.append("联网证据缺少标题或摘要")
+    if web_result and not any(fact.get("tool") == "search_web" for fact in web_result.get("facts", [])):
+        errors.append("联网研究未返回 search_web 结果")
+    if errors and "web" in expected_domains and "web" not in missing and web_result:
+        web_errors = [item for item in errors if "联网" in item]
+        if web_errors:
+            missing.append("web")
+    web_blocked_by_request = (not state.get("web_search_enabled", True) and bool(web_result)
+                              and any("联网搜索已关闭" in item for item in web_result.get("errors", [])))
+    if web_blocked_by_request and "web" in missing:
+        missing.remove("web")
+    only_policy_blocked = web_blocked_by_request and expected_domains == {"web"}
+    result = ValidationResult(valid=not errors and not missing,
+                              needs_replan=bool(missing or errors) and not only_policy_blocked,
+                              missing_domains=missing, errors=errors)
     logger.info("Validator: valid=%s errors=%s", result.valid, result.errors)
     emit_event("RULE_VALIDATION_COMPLETED", thread_id=state.get("thread_id"), status="PASS" if result.valid else "FAIL",
                errors=result.errors, missing_domains=result.missing_domains)

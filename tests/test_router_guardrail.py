@@ -71,3 +71,16 @@ def test_authoritative_mentions_do_not_drop_coordinated_unknown_person(monkeypat
     monkeypatch.setattr("nodes.router_node.get_entity_service", lambda: PartialRealMentions())
     result = router_node({"question": "综合分析张伟和李明的学术、职业和企业合作关系。"})
     assert result["entity_mentions"] == ["张伟", "李明"]
+
+
+def test_factual_web_query_cannot_be_misrouted_to_relation_verification(monkeypatch):
+    class OverVerifyingModel(WrongDomainModel):
+        def invoke_router(self, question):
+            return RouterOutput(intent="联网事实查询", entity_mentions=[], complexity="simple",
+                                primary_domain="web", requires_verification=True)
+
+    monkeypatch.setattr(ModelFactory, "structured_model", lambda: OverVerifyingModel())
+    monkeypatch.setattr("nodes.router_node.get_entity_service", lambda: NoAuthoritativeMentions())
+    result = router_node({"question": "清华大学是什么时候成立的？", "web_search_enabled": True})
+    assert result["primary_domain"] == "web"
+    assert result["requires_verification"] is False

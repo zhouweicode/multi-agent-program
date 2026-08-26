@@ -1,5 +1,6 @@
 """Router、Planner、Agent 与 Validator 的结构化输出协议。"""
 from typing import Any, Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -7,7 +8,7 @@ class RouterOutput(BaseModel):
     intent: str = Field(description="用户意图")
     entity_mentions: list[str]
     complexity: Literal["simple", "complex"]
-    primary_domain: Literal["talent", "achievement", "enterprise", "industry", "graph"]
+    primary_domain: Literal["talent", "achievement", "enterprise", "industry", "graph", "web"]
     requires_verification: bool = False
 
 
@@ -20,7 +21,7 @@ class EntityCandidate(BaseModel):
 
 class PlannedTask(BaseModel):
     task_id: str
-    agent: Literal["talent_agent", "achievement_agent", "enterprise_agent", "industry_agent", "graph_reasoning_agent"]
+    agent: Literal["talent_agent", "achievement_agent", "enterprise_agent", "industry_agent", "graph_reasoning_agent", "web_research_agent"]
     goal: str
     required_fact_types: list[str] = Field(default_factory=list, description="完成任务必须返回的业务事实类型")
     required_entity_ids: list[str] = Field(default_factory=list, description="任务涉及的规范实体 ID")
@@ -40,6 +41,7 @@ class ToolCallSpec(BaseModel):
 class DomainResult(BaseModel):
     agent: str
     summary: str
+    response: str | None = Field(default=None, description="Agent 基于 Tool Observation 形成的最终回答")
     facts: list[dict[str, Any]] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     tool_calls: list[ToolCallSpec] = Field(default_factory=list)
@@ -50,7 +52,7 @@ class EvidenceRecord(BaseModel):
     """跨 MySQL、Neo4j 与 Mock 后端统一的证据协议。"""
     evidence_id: str
     fact_type: str
-    source_type: Literal["mysql", "neo4j", "milvus", "mock", "derived", "unknown"] = "unknown"
+    source_type: Literal["mysql", "neo4j", "milvus", "web", "mock", "derived", "unknown"] = "unknown"
     source_name: str
     source_record_id: str
     entity_ids: list[str] = Field(default_factory=list)

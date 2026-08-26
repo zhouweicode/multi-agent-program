@@ -2,8 +2,8 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 
 # 所有入口（FastAPI、demo、测试脚本）导入统一配置层时自动加载项目根目录 .env。
 # override=False 保证终端、容器和部署平台显式注入的环境变量拥有更高优先级。
@@ -52,6 +52,17 @@ class Settings:
     run_timeout_seconds: float = 300
     run_registry_path: str = ".runtime/runs.sqlite"
     kg_workflow_registry_path: str = ".runtime/kg-workflow.sqlite"
+    tool_transport: str = "local"
+    mcp_server_url: str = "http://127.0.0.1:8100/mcp"
+    mcp_request_timeout: float = 30
+    mcp_server_host: str = "127.0.0.1"
+    mcp_server_port: int = 8100
+    mcp_server_path: str = "/mcp"
+    web_search_provider: str = "disabled"
+    web_search_api_key: str | None = None
+    web_search_endpoint: str | None = None
+    web_search_timeout: float = 15
+    web_search_max_results: int = 5
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -96,4 +107,15 @@ class Settings:
                    run_max_workers=int(os.getenv("RUN_MAX_WORKERS", "4")),
                    run_timeout_seconds=float(os.getenv("RUN_TIMEOUT_SECONDS", "300")),
                    run_registry_path=os.getenv("RUN_REGISTRY_PATH", ".runtime/runs.sqlite"),
-                   kg_workflow_registry_path=os.getenv("KG_WORKFLOW_REGISTRY_PATH", ".runtime/kg-workflow.sqlite"))
+                   kg_workflow_registry_path=os.getenv("KG_WORKFLOW_REGISTRY_PATH", ".runtime/kg-workflow.sqlite"),
+                   tool_transport=os.getenv("TOOL_TRANSPORT", "local").lower(),
+                   mcp_server_url=os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8100/mcp"),
+                   mcp_request_timeout=float(os.getenv("MCP_REQUEST_TIMEOUT", "30")),
+                   mcp_server_host=os.getenv("MCP_SERVER_HOST", "127.0.0.1"),
+                   mcp_server_port=int(os.getenv("MCP_SERVER_PORT", "8100")),
+                   mcp_server_path=os.getenv("MCP_SERVER_PATH", "/mcp"),
+                   web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "disabled").lower(),
+                   web_search_api_key=os.getenv("WEB_SEARCH_API_KEY"),
+                   web_search_endpoint=os.getenv("WEB_SEARCH_ENDPOINT"),
+                   web_search_timeout=float(os.getenv("WEB_SEARCH_TIMEOUT", "15")),
+                   web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")))

@@ -1,9 +1,10 @@
 """Supervisor/Planner Node：只拆解、调度与 replan，不调用业务 Tool。"""
 import logging
+
 from graph.state import GraphRAGState
+from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
 from models.llm import ModelFactory
 from models.schemas import PlannedTask
-from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
 from services.observability import emit_event
 
 logger = logging.getLogger(__name__)
@@ -14,10 +15,11 @@ DOMAIN_TASKS = {
     "enterprise_agent": "分析两位专家在企业中的角色、共同企业项目和共同企业专利",
     "industry_agent": "查询产业链结构、产业节点、相关企业和产业事件",
     "graph_reasoning_agent": "查询两位专家的多跳路径、间接关系和路径强度",
+    "web_research_agent": "搜索公开网页来源，并提取带 URL 的外部候选证据",
 }
 
 
-def _guard_complex_plan(question: str, plan, is_replan: bool):
+def _guard_complex_plan(question: str, plan, is_replan: bool, web_search_enabled: bool = True):
     """对初次复杂规划做领域边界保护；重规划仍以 Validator 缺失项为准。"""
     if is_replan:
         return plan
@@ -32,6 +34,8 @@ def _guard_complex_plan(question: str, plan, is_replan: bool):
         required.append("industry_agent")
     if any(word in question for word in ("间接关系", "多跳", "路径", "邻居", "关系强度", "局部子图")):
         required.append("graph_reasoning_agent")
+    if web_search_enabled and any(word in question for word in ("联网", "网络搜索", "外部来源", "公开资料", "官网", "新闻", "最新", "近期", "实时", "查证")):
+        required.append("web_research_agent")
     if not required:
         return plan
     tasks = [PlannedTask(task_id=f"task_{agent.removesuffix('_agent')}", agent=agent,
@@ -51,7 +55,7 @@ def supervisor_node(state: GraphRAGState) -> dict:
         state["question"], state["resolved_entities"], state.get("validation_result"),
         state.get("verification_result"), state.get("task_history", []))
     is_replan = bool(state.get("validation_result") or state.get("verification_result"))
-    plan = _guard_complex_plan(state["question"], plan, is_replan)
+    plan = _guard_complex_plan(state["question"], plan, is_replan, state.get("web_search_enabled", True))
     entity_ids = list(state.get("resolved_entities", {}).values())
     normalized_tasks = []
     for task in plan.tasks:

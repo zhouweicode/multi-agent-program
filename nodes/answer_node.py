@@ -1,9 +1,10 @@
-"""Answer Node：组合领域 Formatter，不调用模型、不补充外部知识。"""
+"""Answer Node：组合领域 Formatter，不调用模型、不自行补充事实。"""
 from formatters.achievement_formatter import format_achievement
 from formatters.enterprise_formatter import format_enterprise
 from formatters.graph_formatter import format_graph
 from formatters.industry_formatter import format_industry
 from formatters.talent_formatter import format_talent
+from formatters.web_formatter import format_web
 from graph.state import GraphRAGState
 from services.observability import emit_event
 
@@ -24,6 +25,7 @@ def answer_node(state: GraphRAGState) -> dict:
         format_enterprise(state.get("enterprise_result"), resolved),
         format_industry(state.get("industry_result"), resolved),
         format_graph(state.get("graph_result"), resolved),
+        format_web(state.get("web_result"), resolved),
     ]
     sections = [text for text, _ in formatted if text]
     signals = [text.split("：", 1)[0] for text, supported in formatted if text and supported]
@@ -34,13 +36,27 @@ def answer_node(state: GraphRAGState) -> dict:
     if verification:
         verdict = "是" if verification["status"] == "PASS" else "不是"
         semantic = f"\n语义验证结论：{verdict}长期稳定的核心科研合作伙伴（{verification['status']}，置信度 {verification['confidence']:.0%}）。{verification['reason']}。"
+    has_web = bool(state.get("web_result"))
     if len(entity_ids) > 1:
         synthesis = (f"\n综合结论：现有证据明确支持两人在{'、'.join(signals)}方面存在合作。"
                      if signals else "\n综合结论：现有返回证据不足以确认两人存在明确合作。")
-    else:
+    elif entity_ids and has_web:
+        synthesis = "\n综合结论：以上包含知识图谱事实与可追溯的联网候选证据，两者需保持来源边界。"
+    elif entity_ids:
         synthesis = "\n综合结论：以上为当前实体在知识图谱中已返回并通过校验的事实。"
+    else:
+        synthesis = ""
     # 证据明细保留在 Shared State 与执行轨迹中供审计，最终答案只展示结论，
     # 避免大量内部 evidence_id 影响可读性。
-    answer = f"基于当前知识图谱返回并通过规则校验的数据，{names or '当前查询实体'} 的分析如下：\n{numbered}{synthesis}{semantic}\n以上结论未使用知识图谱之外的事实。"
+    has_graph_data = any(state.get(field) for field in (
+        "talent_result", "achievement_result", "enterprise_result", "industry_result", "graph_result"))
+    basis = ("基于当前知识图谱与联网公开来源返回、并通过结构和溯源规则校验的数据"
+             if has_web and has_graph_data else
+             ("基于联网公开来源返回并通过结构与溯源规则校验的数据"
+              if has_web else "基于当前知识图谱返回并通过规则校验的数据"))
+    footer = ("联网内容仅作为带来源 URL 的外部候选证据，未自动写入知识图谱，也不会覆盖图谱事实。"
+              if has_web else "以上结论未使用知识图谱之外的事实。")
+    subject = f"{names} 的分析如下" if names else "分析如下"
+    answer = f"{basis}，{subject}：\n{numbered}{synthesis}{semantic}\n{footer}"
     emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="PASS", has_verification=bool(verification))
     return {"final_answer": answer}

@@ -3,23 +3,33 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from graph.builder import build_graph
+from mcp_runtime.client import mcp_server_health
 from models.settings import Settings
-from services.checkpoint_service import build_sqlite_checkpointer, close_sqlite_checkpointer
-from services.observability import clear_events, emit_event, get_events
-from services.resources import (active_release_settings, close_resources, get_achievement_service, get_entity_service,
-                                get_enterprise_service, get_graph_service, get_industry_service)
-from services.run_service import RunManager
 from repositories.run_repository import SQLiteRunRepository
+from services.checkpoint_service import (
+    build_sqlite_checkpointer,
+    close_sqlite_checkpointer,
+)
+from services.observability import clear_events, emit_event, get_events
+from services.resources import (
+    active_release_settings,
+    close_resources,
+    get_achievement_service,
+    get_enterprise_service,
+    get_entity_service,
+    get_graph_service,
+    get_industry_service,
+)
+from services.run_service import RunManager
 
 
 @asynccontextmanager
@@ -38,10 +48,22 @@ frontend_dir = Path(__file__).resolve().parent.parent / "frontend"
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
 
 
+@app.middleware("http")
+async def prevent_stale_frontend_assets(request: Request, call_next):
+    """开发演示页始终校验资源版本，避免浏览器继续执行旧版前端。"""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     thread_id: str | None = Field(default=None, min_length=8, max_length=128)
     max_replans: int = Field(default=2, ge=0, le=10)
+    web_search_enabled: bool = True
 
 
 class ResumeRequest(BaseModel):
@@ -85,7 +107,9 @@ def health() -> dict:
             "model_name": settings.model_name, "entity_backend": settings.entity_backend,
             "achievement_backend": settings.achievement_backend, "graph_backend": settings.graph_backend,
             "enterprise_backend": settings.enterprise_backend, "industry_backend": settings.industry_backend,
-            "embedding_provider": settings.embedding_provider, "checkpointer": "sqlite", "execution": "background+sse",
+            "embedding_provider": settings.embedding_provider, "tool_transport": settings.tool_transport,
+            "mcp_server_url": settings.mcp_server_url if settings.tool_transport == "mcp" else None,
+            "checkpointer": "sqlite", "execution": "background+sse",
             "active_kg_release": active_release.get("release_id") if active_release else None,
             "active_milvus_collection": active_release.get("milvus_collection") if active_release else settings.milvus_collection}
 
@@ -94,13 +118,17 @@ def health() -> dict:
 def dependency_health() -> JSONResponse:
     """主动探测启用的数据后端；异常被隔离且不暴露密码。"""
     checks = {}
-    for name, factory in (("entity", get_entity_service), ("achievement", get_achievement_service),
-                          ("enterprise", get_enterprise_service), ("industry", get_industry_service),
-                          ("graph", get_graph_service)):
+    settings = Settings.from_env()
+    factories = (("entity", get_entity_service),) if settings.tool_transport == "mcp" else (
+        ("entity", get_entity_service), ("achievement", get_achievement_service),
+        ("enterprise", get_enterprise_service), ("industry", get_industry_service), ("graph", get_graph_service))
+    for name, factory in factories:
         try:
             checks[name] = factory().health()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - 健康探针必须隔离任意第三方客户端异常
             checks[name] = {"ready": False, "error_type": type(exc).__name__, "message": str(exc)}
+    if settings.tool_transport == "mcp":
+        checks["mcp"] = mcp_server_health(settings.mcp_server_url, settings.mcp_request_timeout)
     ready = all(item.get("ready", False) for item in checks.values())
     return JSONResponse(status_code=200 if ready else 503,
                         content={"status": "ok" if ready else "degraded", "stage": 9, "dependencies": checks})
@@ -130,9 +158,11 @@ def create_query(request: QueryRequest) -> JSONResponse:
     clear_events(run_id)
     runs.create(run_id)
     emit_event("QUERY_STARTED", thread_id=run_id,
-               node_input={"question": request.question, "run_id": run_id, "max_replans": request.max_replans})
+               node_input={"question": request.question, "run_id": run_id, "max_replans": request.max_replans,
+                           "web_search_enabled": request.web_search_enabled})
     initial = {"thread_id": run_id, "question": request.question, "replan_count": 0,
-               "max_replans": request.max_replans, "resolved_entities": {}, "task_history": []}
+               "max_replans": request.max_replans, "web_search_enabled": request.web_search_enabled,
+               "resolved_entities": {}, "task_history": []}
     runs.submit(run_id, lambda: graph.invoke(initial, config=_config(run_id)))
     return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id, "status": "RUNNING"})
 

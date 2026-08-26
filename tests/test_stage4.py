@@ -44,6 +44,7 @@ def test_domain_agent_stops_when_model_returns_no_tool_calls():
     result = agent.run("无需工具", {})
     assert result["tool_calls"] == []
     assert result["facts"] == []
+    assert result["response"] == '{"status":"complete"}'
 
 
 def test_domain_agent_enforces_total_tool_call_budget():
