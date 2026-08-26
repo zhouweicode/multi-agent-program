@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>科技知识图谱 · Multi-Agent GraphRAG</title>
-  <link rel="icon" href="/static/favicon.svg?v=20260826-2" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=20260826-2">
-  <link rel="stylesheet" href="/static/layout-fix.css?v=20260826-2">
+  <link rel="icon" href="/static/favicon.svg?v=20260826-3" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v=20260826-3">
+  <link rel="stylesheet" href="/static/layout-fix.css?v=20260826-3">
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -123,6 +123,28 @@
         </section>
       </aside>
     </section>
+
+    <section id="runComparePanel" class="panel run-compare-panel">
+      <div class="section-heading">
+        <div><span class="section-index">OPS</span><h2>双 Run 对比</h2></div>
+        <button id="refreshRuns" class="secondary-action" type="button">刷新运行记录</button>
+      </div>
+      <p class="compare-description">对比模型、Prompt 与工作流版本，以及延迟、Token、成本、工具成功率、重规划和每个 Span。</p>
+      <div class="compare-controls">
+        <label>基准 Run<select id="leftRunSelect" aria-label="选择基准 Run"></select></label>
+        <span class="compare-arrow">→</span>
+        <label>候选 Run<select id="rightRunSelect" aria-label="选择候选 Run"></select></label>
+        <button id="compareRuns" class="primary-action" type="button">开始对比</button>
+      </div>
+      <div id="compareEmpty" class="compare-empty">至少完成两个查询后即可进行 Run 对比。</div>
+      <div id="compareResult" class="hidden">
+        <div id="compareMetrics" class="compare-metrics"></div>
+        <div class="compare-run-grid">
+          <article class="compare-run-card"><div id="leftRunHeader"></div><div id="leftSpanList" class="compare-span-list"></div></article>
+          <article class="compare-run-card"><div id="rightRunHeader"></div><div id="rightSpanList" class="compare-span-list"></div></article>
+        </div>
+      </div>
+    </section>
   </main>
   <dialog id="eventModal" class="event-modal">
     <div class="event-modal-card">
@@ -139,6 +161,6 @@
     </div>
   </dialog>
   <footer>GraphRAG Studio · 数据库返回什么，答案就只说什么</footer>
-  <script src="/static/app.js?v=20260826-2" defer></script>
+  <script src="/static/app.js?v=20260826-3" defer></script>
 </body>
 </html>

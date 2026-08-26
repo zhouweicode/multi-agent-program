@@ -6,6 +6,7 @@ from graph.state import GraphRAGState
 from models.llm import ModelFactory
 from services.observability import emit_event
 from services.resources import get_entity_service
+from services.telemetry import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,11 @@ def _apply_web_search_policy(question: str, output, enabled: bool):
     """关闭联网时移除混合问题中的 Web 领域；纯联网问题保留以返回明确提示。"""
     if enabled:
         return output
+    # 只有问题确实包含联网意图时才调整路由。此前会把任意离线复杂问题错误降级为 simple，
+    # 从而绕过 Supervisor，漏掉本应执行的第二个领域 Agent。
+    web_requested = any(keyword in question for keyword in DOMAIN_KEYWORDS["web"])
+    if not web_requested:
+        return output
     non_web = [domain for domain, keywords in DOMAIN_KEYWORDS.items()
                if domain != "web" and any(keyword in question for keyword in keywords)]
     if output.primary_domain == "web" and non_web:
@@ -85,7 +91,8 @@ def _apply_verification_guardrail(question: str, output):
 
 
 def router_node(state: GraphRAGState) -> dict:
-    output = ModelFactory.structured_model().invoke_router(state["question"])
+    with traced_span("router.model.invoke", "model_operation", {"model.operation": "route"}):
+        output = ModelFactory.structured_model().invoke_router(state["question"])
     output = _apply_domain_guardrail(state["question"], output)
     output = _apply_web_search_policy(state["question"], output, state.get("web_search_enabled", True))
     output = _apply_verification_guardrail(state["question"], output)

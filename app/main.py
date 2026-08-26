@@ -20,6 +20,14 @@ from services.checkpoint_service import (
     close_sqlite_checkpointer,
 )
 from services.observability import clear_events, emit_event, get_events
+from services.telemetry import (
+    activate_trace,
+    finish_run_trace,
+    prepare_run_trace,
+    repository as observability_repository,
+    run_metadata,
+    traced_span,
+)
 from services.resources import (
     active_release_settings,
     close_resources,
@@ -155,16 +163,28 @@ def create_query(request: QueryRequest) -> JSONResponse:
     run_id = request.thread_id or f"run-{uuid4().hex}"
     if runs.exists(run_id) or _checkpoint_exists(run_id):
         raise HTTPException(status_code=409, detail="run_id 已存在，请为新查询使用新的 run_id")
-    clear_events(run_id)
-    runs.create(run_id)
-    emit_event("QUERY_STARTED", thread_id=run_id,
-               node_input={"question": request.question, "run_id": run_id, "max_replans": request.max_replans,
-                           "web_search_enabled": request.web_search_enabled})
-    initial = {"thread_id": run_id, "question": request.question, "replan_count": 0,
-               "max_replans": request.max_replans, "web_search_enabled": request.web_search_enabled,
-               "resolved_entities": {}, "task_history": []}
-    runs.submit(run_id, lambda: graph.invoke(initial, config=_config(run_id)))
-    return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id, "status": "RUNNING"})
+    trace_context = prepare_run_trace(run_id, run_metadata())
+    submitted = False
+    try:
+        with activate_trace(trace_context):
+            with traced_span("api.queries.create", "api", {"http.route": "/queries", "run.id": run_id}):
+                clear_events(run_id)
+                runs.create(run_id)
+                emit_event("QUERY_STARTED", thread_id=run_id,
+                           node_input={"question": request.question, "run_id": run_id, "max_replans": request.max_replans,
+                                       "web_search_enabled": request.web_search_enabled})
+                initial = {"thread_id": run_id, "question": request.question, "replan_count": 0,
+                           "max_replans": request.max_replans, "web_search_enabled": request.web_search_enabled,
+                           "resolved_entities": {}, "task_history": []}
+                runs.submit(run_id, lambda: graph.invoke(initial, config=_config(run_id)), trace_context=trace_context)
+                submitted = True
+    except Exception as exc:
+        runs.fail(run_id, exc)
+        if not submitted:
+            finish_run_trace(trace_context, "FAILED")
+        raise
+    return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id,
+                                                   "trace_id": trace_context.trace_id, "status": "RUNNING"})
 
 
 @app.post("/queries/{run_id}/resume", status_code=202)
@@ -179,9 +199,58 @@ def resume_query(run_id: str, request: ResumeRequest) -> JSONResponse:
         runs.create(run_id)
     else:
         runs.mark_running(run_id)
-    emit_event("QUERY_RESUMED", thread_id=run_id, node_input={"selections": request.selections})
-    runs.submit(run_id, lambda: graph.invoke(Command(resume=request.selections), config=_config(run_id)))
-    return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id, "status": "RUNNING"})
+    trace_context = prepare_run_trace(run_id, run_metadata())
+    submitted = False
+    try:
+        with activate_trace(trace_context):
+            with traced_span("api.queries.resume", "api", {"http.route": "/queries/{run_id}/resume", "run.id": run_id}):
+                emit_event("QUERY_RESUMED", thread_id=run_id, node_input={"selections": request.selections})
+                runs.submit(run_id, lambda: graph.invoke(Command(resume=request.selections), config=_config(run_id)),
+                            trace_context=trace_context)
+                submitted = True
+    except Exception as exc:
+        runs.fail(run_id, exc)
+        if not submitted:
+            finish_run_trace(trace_context, "FAILED")
+        raise
+    return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id,
+                                                   "trace_id": trace_context.trace_id, "status": "RUNNING"})
+
+
+@app.get("/observability/summary")
+def observability_summary(limit: int = 200) -> dict:
+    return observability_repository().summary(max(1, min(limit, 500)))
+
+
+@app.get("/observability/runs")
+def observability_runs(limit: int = 50) -> dict:
+    rows = observability_repository().list_runs(max(1, min(limit, 500)))
+    return {"runs": rows, "count": len(rows)}
+
+
+@app.get("/observability/runs/{run_id}")
+def observability_run(run_id: str) -> dict:
+    row = observability_repository().get_run(run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Trace Run 不存在")
+    return row
+
+
+@app.get("/observability/compare")
+def observability_compare(left_run_id: str, right_run_id: str) -> dict:
+    left = observability_repository().get_run(left_run_id)
+    right = observability_repository().get_run(right_run_id)
+    if not left or not right:
+        raise HTTPException(status_code=404, detail="待比较的 Run 不存在")
+    metric_names = ("duration_ms", "input_tokens", "output_tokens", "total_tokens", "cost",
+                    "tool_calls", "tool_successes", "error_count", "replan_count", "attempt_count")
+    deltas = {name: round(float(right["summary"][name]) - float(left["summary"][name]), 8)
+              for name in metric_names}
+    left_names = [span["name"] for span in left["spans"]]
+    right_names = [span["name"] for span in right["spans"]]
+    return {"left": left, "right": right, "delta": deltas,
+            "span_diff": {"only_left": sorted(set(left_names) - set(right_names)),
+                          "only_right": sorted(set(right_names) - set(left_names))}}
 
 
 @app.post("/queries/{run_id}/cancel", status_code=202)

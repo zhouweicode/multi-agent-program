@@ -64,7 +64,7 @@ Tool Function
 → DomainResult.evidence
 → Merge 按 evidence_id 去重
 → Rule Validator 确定性校验
-→ Answer 输出证据编号
+→ Answer 输出结论；证据明细保留在 State 与 Trace 中供审计
 ```
 
 聚合统计本身不伪造成原始证据；它引用的论文、项目、专利或关系才是证据。

@@ -12,6 +12,7 @@ from typing import Any, Iterator
 
 from langgraph.errors import GraphInterrupt
 from services.run_control import raise_if_stopped
+from services.telemetry import trace_fields, traced_span
 
 logger = logging.getLogger("graphrag.events")
 _event_lock = Lock()
@@ -45,7 +46,8 @@ def serializable_snapshot(value: Any) -> Any:
 
 
 def emit_event(event: str, **fields: Any) -> None:
-    payload = {"event": event, "timestamp": datetime.now(timezone.utc).isoformat(), **serializable_snapshot(fields)}
+    payload = {"event": event, "timestamp": datetime.now(timezone.utc).isoformat(),
+               **trace_fields(), **serializable_snapshot(fields)}
     thread_id = fields.get("thread_id")
     if thread_id:
         key = str(thread_id)
@@ -79,18 +81,30 @@ def traced_node(node_name: str, node):
     def wrapped(state):
         node_input = serializable_snapshot(state)
         thread_id = state.get("thread_id")
+        span = traced_span(f"langgraph.node.{node_name}", "node", {
+            "langgraph.node.name": node_name,
+            "run.id": thread_id,
+        })
+        span.__enter__()
         try:
             raise_if_stopped(thread_id)
             output = node(state)
             raise_if_stopped(thread_id)
         except GraphInterrupt:
+            span.status = "INTERRUPTED"
+            span.set_attribute("langgraph.node.outcome", "interrupt")
+            span.finish()
             emit_event("NODE_INTERRUPTED", thread_id=thread_id, node_name=node_name,
                        node_input=node_input, node_output={"status": "INTERRUPTED"})
             raise
         except Exception as exc:
+            span.record_error(exc)
+            span.finish()
             emit_event("NODE_FAILED", thread_id=thread_id, node_name=node_name, node_input=node_input,
                        node_output={"status": "FAILED", "error_type": type(exc).__name__, "error": str(exc)})
             raise
+        span.set_attribute("langgraph.node.outcome", "completed")
+        span.finish()
         emit_event("NODE_EXECUTED", thread_id=thread_id, node_name=node_name,
                    node_input=node_input, node_output=serializable_snapshot(output))
         return output

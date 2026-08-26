@@ -9,6 +9,7 @@ from collections import OrderedDict
 from repositories.run_repository import SQLiteRunRepository
 from services.run_control import RunCancelledError, clear_run, raise_if_stopped, register_run, request_stop
 from services.observability import emit_event
+from services.telemetry import TraceContext, activate_trace, finish_run_trace, traced_span
 
 
 class RunManager:
@@ -21,6 +22,7 @@ class RunManager:
         self._runs: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._futures: dict[str, Future] = {}
         self._timers: dict[str, Timer] = {}
+        self._trace_contexts: dict[str, TraceContext] = {}
         self._max_runs = max_runs
         self._timeout_seconds = timeout_seconds
         self._repository = repository
@@ -56,15 +58,24 @@ class RunManager:
                 self._runs[run_id] = persisted | {"result": None, "interrupt": None}
         self._update(run_id, status="RUNNING", result=None, interrupt=None, error=None)
 
-    def submit(self, run_id: str, operation: Callable[[], dict]) -> None:
+    def submit(self, run_id: str, operation: Callable[[], dict], trace_context: TraceContext | None = None) -> None:
         register_run(run_id)
-        future = self._executor.submit(self._execute, run_id, operation)
         timer = Timer(self._timeout_seconds, self._request_timeout, args=(run_id,))
         timer.daemon = True
         with self._lock:
+            # 持锁提交，避免极短任务在线程完成清理后，主线程才把 Future/Trace 写回字典。
+            if trace_context is not None:
+                self._trace_contexts[run_id] = trace_context
+            future = self._executor.submit(self._execute, run_id, operation, trace_context)
             self._futures[run_id] = future
             self._timers[run_id] = timer
         timer.start()
+
+    def fail(self, run_id: str, error: BaseException) -> None:
+        """记录后台任务提交前的失败，避免 Run 永久停留在 RUNNING。"""
+        if self.get(run_id):
+            self._update(run_id, status="FAILED",
+                         error={"type": type(error).__name__, "message": str(error)})
 
     def _request_timeout(self, run_id: str) -> None:
         record = self.get(run_id)
@@ -82,6 +93,14 @@ class RunManager:
             future = self._futures.get(run_id)
         if future and future.cancel():
             self._update(run_id, status="CANCELLED")
+            with self._lock:
+                trace_context = self._trace_contexts.pop(run_id, None)
+                timer = self._timers.pop(run_id, None)
+                self._futures.pop(run_id, None)
+            if timer:
+                timer.cancel()
+            if trace_context:
+                finish_run_trace(trace_context, "CANCELLED")
             clear_run(run_id)
             emit_event("RUN_STATUS_CHANGED", thread_id=run_id, status="CANCELLED")
             return True
@@ -89,7 +108,27 @@ class RunManager:
         emit_event("RUN_CANCEL_REQUESTED", thread_id=run_id)
         return True
 
-    def _execute(self, run_id: str, operation: Callable[[], dict]) -> None:
+    def _execute(self, run_id: str, operation: Callable[[], dict], trace_context: TraceContext | None = None) -> None:
+        if trace_context is None:
+            self._execute_impl(run_id, operation)
+            return
+        try:
+            with activate_trace(trace_context):
+                with traced_span("graphrag.workflow.execute", "workflow", {"run.id": run_id}) as span:
+                    self._execute_impl(run_id, operation)
+                    record = self.get(run_id) or {}
+                    span.set_attribute("run.status", record.get("status"))
+                    if record.get("status") == "FAILED":
+                        span.status = "ERROR"
+                        span.error_type = (record.get("error") or {}).get("type")
+        finally:
+            record = self.get(run_id) or {}
+            result = record.get("result") or {}
+            finish_run_trace(trace_context, record.get("status", "FAILED"), int(result.get("replan_count", 0) or 0))
+            with self._lock:
+                self._trace_contexts.pop(run_id, None)
+
+    def _execute_impl(self, run_id: str, operation: Callable[[], dict]) -> None:
         started = monotonic()
         try:
             result = operation()

@@ -6,6 +6,7 @@ from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
 from models.llm import ModelFactory
 from models.schemas import PlannedTask
 from services.observability import emit_event
+from services.telemetry import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,13 @@ def supervisor_node(state: GraphRAGState) -> dict:
     if state.get("replan_count", 0) >= state.get("max_replans", 2):
         logger.warning("Supervisor: 已达到 max_replans")
         return {"tasks": [], "plan": {"reason": "达到最大重规划次数"}}
-    plan = ModelFactory.structured_model().invoke_supervisor(
-        state["question"], state["resolved_entities"], state.get("validation_result"),
-        state.get("verification_result"), state.get("task_history", []))
+    replan_context = bool(state.get("validation_result") or state.get("verification_result"))
+    with traced_span("supervisor.model.invoke", "model_operation", {
+        "model.operation": "plan", "workflow.replan": replan_context,
+    }):
+        plan = ModelFactory.structured_model().invoke_supervisor(
+            state["question"], state["resolved_entities"], state.get("validation_result"),
+            state.get("verification_result"), state.get("task_history", []))
     is_replan = bool(state.get("validation_result") or state.get("verification_result"))
     plan = _guard_complex_plan(state["question"], plan, is_replan, state.get("web_search_enabled", True))
     entity_ids = list(state.get("resolved_entities", {}).values())

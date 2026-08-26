@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from models.schemas import DomainResult, ToolCallSpec
 from services.evidence_normalizer import normalize_tool_output
 from services.observability import emit_event
+from services.telemetry import traced_span
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,16 @@ class ToolCallingDomainAgent:
         self.final_response_instruction = final_response_instruction
 
     def run(self, goal: str, resolved_entities: dict[str, str], thread_id: str | None = None) -> dict:
+        with traced_span(f"agent.{self.name}", "agent", {
+            "agent.name": self.name,
+            "agent.entity_count": len(resolved_entities),
+        }) as span:
+            result = self._run_impl(goal, resolved_entities, thread_id)
+            span.set_attribute("agent.tool_call_count", len(result.get("tool_calls", [])))
+            span.set_attribute("agent.error_count", len(result.get("errors", [])))
+            return result
+
+    def _run_impl(self, goal: str, resolved_entities: dict[str, str], thread_id: str | None = None) -> dict:
         facts, evidence, errors, calls = [], [], [], []
         final_response = None
         relation_instruction = ("当前包含多个已解析实体，目标是分析实体之间的关系。优先调用共同、重叠、合作、"
@@ -36,7 +47,11 @@ class ToolCallingDomainAgent:
             HumanMessage(content=json.dumps({"goal": goal, "resolved_entities": resolved_entities}, ensure_ascii=False)),
         ]
         for step in range(self.max_steps):
-            message = self.model.invoke(messages)
+            with traced_span("agent.model.invoke", "model_operation", {
+                "agent.name": self.name,
+                "agent.step": step + 1,
+            }):
+                message = self.model.invoke(messages)
             messages.append(message)
             if not message.tool_calls:
                 if isinstance(message.content, str):
@@ -62,10 +77,19 @@ class ToolCallingDomainAgent:
                     logger.info("%s 调用工具 %s", self.name, call["name"])
                     emit_event("AGENT_TOOL_CALLED", thread_id=thread_id, agent_name=self.name,
                                tool_name=call["name"], step=step + 1, tool_input=call["args"])
-                    output = tool.invoke(call["args"])
+                    metadata = getattr(tool, "metadata", None) or {}
+                    with traced_span(f"tool.{call['name']}", "tool", {
+                        "agent.name": self.name,
+                        "tool.name": call["name"],
+                        "tool.transport": metadata.get("tool_transport", "local"),
+                        "agent.step": step + 1,
+                    }) as tool_span:
+                        output = tool.invoke(call["args"])
+                        result_count = len(output) if isinstance(output, list) else 1
+                        tool_span.set_attribute("tool.result_count", result_count)
                     emit_event("AGENT_TOOL_COMPLETED", thread_id=thread_id, agent_name=self.name,
                                tool_name=call["name"], step=step + 1,
-                               result_count=len(output) if isinstance(output, list) else 1,
+                               result_count=result_count,
                                tool_output=output)
                     facts.append({"tool": call["name"], "data": output})
                     evidence.extend(normalize_tool_output(call["name"], output, list(resolved_entities.values())))
@@ -73,6 +97,9 @@ class ToolCallingDomainAgent:
                     logger.exception("%s 工具调用失败", self.name)
                     output = {"error": str(exc)}
                     errors.append(f"{call['name']}: {exc}")
+                    emit_event("AGENT_TOOL_FAILED", thread_id=thread_id, agent_name=self.name,
+                               tool_name=call["name"], step=step + 1,
+                               error_type=type(exc).__name__, error=str(exc))
                 messages.append(ToolMessage(content=json.dumps(output, ensure_ascii=False),
                                             tool_call_id=call["id"], name=call["name"]))
         else:

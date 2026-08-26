@@ -7,6 +7,7 @@ import json
 import re
 
 from models.settings import Settings
+from services.telemetry import traced_span
 
 
 class MySQLRepository:
@@ -27,30 +28,33 @@ class MySQLRepository:
 
     @contextmanager
     def _cursor(self) -> Iterator[object]:
-        try:
-            import pymysql
-        except ImportError as exc:
-            raise RuntimeError("请安装 PyMySQL") from exc
-        connection = pymysql.connect(
-            host=self.settings.mysql_host,
-            port=self.settings.mysql_port,
-            user=self.settings.mysql_user,
-            password=self.settings.mysql_password,
-            database=self.settings.mysql_database,
-            charset="utf8mb4",
-            cursorclass=pymysql.cursors.DictCursor,
-            read_timeout=10,
-            write_timeout=10,
-            autocommit=False,
-        )
-        try:
-            with connection.cursor() as cursor:
-                # 双重保护：本连接只允许执行只读事务。
-                cursor.execute("SET SESSION TRANSACTION READ ONLY")
-                yield cursor
-        finally:
-            connection.rollback()
-            connection.close()
+        with traced_span("db.mysql.read", "database", {
+            "db.system": "mysql", "db.namespace": self.settings.mysql_database,
+        }):
+            try:
+                import pymysql
+            except ImportError as exc:
+                raise RuntimeError("请安装 PyMySQL") from exc
+            connection = pymysql.connect(
+                host=self.settings.mysql_host,
+                port=self.settings.mysql_port,
+                user=self.settings.mysql_user,
+                password=self.settings.mysql_password,
+                database=self.settings.mysql_database,
+                charset="utf8mb4",
+                cursorclass=pymysql.cursors.DictCursor,
+                read_timeout=10,
+                write_timeout=10,
+                autocommit=False,
+            )
+            try:
+                with connection.cursor() as cursor:
+                    # 双重保护：本连接只允许执行只读事务。
+                    cursor.execute("SET SESSION TRANSACTION READ ONLY")
+                    yield cursor
+            finally:
+                connection.rollback()
+                connection.close()
 
     @staticmethod
     def _repair_text(value: str | None) -> str:

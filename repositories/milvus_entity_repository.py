@@ -6,6 +6,7 @@ from typing import Any
 
 from models.settings import Settings
 from services.embedding_service import EmbeddingFactory, EmbeddingProvider
+from services.telemetry import traced_span
 
 
 class MilvusEntityRepository:
@@ -52,7 +53,10 @@ class MilvusEntityRepository:
         return " ".join(str(row.get(key, "")) for key in ("name", "organization", "title") if row.get(key))
 
     def count(self) -> int:
-        result = self.client.query(self.collection, filter="", output_fields=["count(*)"])
+        with traced_span("db.milvus.count", "database", {
+            "db.system": "milvus", "db.collection.name": self.collection,
+        }):
+            result = self.client.query(self.collection, filter="", output_fields=["count(*)"])
         return int(result[0]["count(*)"]) if result else 0
 
     def health(self) -> dict:
@@ -88,15 +92,18 @@ class MilvusEntityRepository:
 
     def search_scholars(self, mention: str, limit: int = 10) -> list[dict]:
         from pymilvus import AnnSearchRequest, RRFRanker
-        dense, sparse = self.embedding.encode([mention])
-        requests = [
-            AnnSearchRequest([dense[0]], "dense_vector", {"metric_type": "COSINE"}, limit=limit),
-            AnnSearchRequest([sparse[0]], "sparse_vector", {"metric_type": "IP"}, limit=limit),
-        ]
-        results = self.client.hybrid_search(
-            self.collection, requests, RRFRanker(self.settings.milvus_rrf_k), limit=limit,
-            output_fields=["canonical_id", "name", "organization", "title"],
-        )
+        with traced_span("db.milvus.hybrid_search", "database", {
+            "db.system": "milvus", "db.collection.name": self.collection, "db.limit": limit,
+        }):
+            dense, sparse = self.embedding.encode([mention])
+            requests = [
+                AnnSearchRequest([dense[0]], "dense_vector", {"metric_type": "COSINE"}, limit=limit),
+                AnnSearchRequest([sparse[0]], "sparse_vector", {"metric_type": "IP"}, limit=limit),
+            ]
+            results = self.client.hybrid_search(
+                self.collection, requests, RRFRanker(self.settings.milvus_rrf_k), limit=limit,
+                output_fields=["canonical_id", "name", "organization", "title"],
+            )
         rows = []
         for hit in results[0] if results else []:
             entity = hit.get("entity", {})
@@ -114,10 +121,13 @@ class MilvusEntityRepository:
 
     def get_scholar(self, canonical_id: str) -> dict | None:
         safe_id = canonical_id.replace("\\", "\\\\").replace('"', '\\"')
-        rows = self.client.query(
-            self.collection, filter=f'canonical_id == "{safe_id}"',
-            output_fields=["canonical_id", "name", "organization", "title"], limit=1,
-        )
+        with traced_span("db.milvus.get", "database", {
+            "db.system": "milvus", "db.collection.name": self.collection,
+        }):
+            rows = self.client.query(
+                self.collection, filter=f'canonical_id == "{safe_id}"',
+                output_fields=["canonical_id", "name", "organization", "title"], limit=1,
+            )
         if not rows:
             return None
         row = rows[0]

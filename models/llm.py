@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from models.contracts import DEFAULT_REQUIRED_FACT_TYPES
 from models.schemas import PlannedTask, RouterOutput, SupervisorPlan
 from models.settings import Settings
+from services.telemetry import telemetry_callback
 
 
 class MockStructuredModel:
@@ -167,7 +168,8 @@ class ModelFactory:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=settings.model_name, api_key=settings.model_api_key,
                           base_url=settings.model_base_url, temperature=settings.model_temperature,
-                          timeout=settings.model_request_timeout, max_retries=settings.model_max_retries)
+                          timeout=settings.model_request_timeout, max_retries=settings.model_max_retries,
+                          callbacks=[telemetry_callback])
 
     @staticmethod
     def structured_model() -> Any:

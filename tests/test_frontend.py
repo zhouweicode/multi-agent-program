@@ -28,7 +28,10 @@ def test_frontend_index_and_assets_are_served():
     assert "深圳科技大学003的高芳" in page.text
     assert "上海科技大学002的赵强" in page.text
     assert "李明" not in page.text
-    assert '/static/app.js?v=20260826-2' in page.text
+    assert '/static/app.js?v=20260826-3' in page.text
+    assert 'id="runComparePanel"' in page.text
+    assert 'id="leftRunSelect"' in page.text
+    assert 'id="rightRunSelect"' in page.text
     assert page.headers["cache-control"] == "no-cache, no-store, must-revalidate"
     assert client.get("/static/styles.css").status_code == 200
     layout_css = client.get("/static/layout-fix.css")
@@ -43,6 +46,8 @@ def test_frontend_index_and_assets_are_served():
     assert "WebResearchAgent" in script.text
     assert "web_search_enabled:state.webSearchEnabled" in script.text
     assert "renderWebSources" in script.text
+    assert "/observability/compare" in script.text
+    assert "loadRunOptions" in script.text
 
 
 def test_query_api_persists_web_search_switch():

@@ -7,6 +7,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from models.llm import ModelFactory
 from models.schemas import ToolCallSpec, VerificationResult
+from services.telemetry import traced_span
 from tools.provider import get_tools
 
 logger = logging.getLogger(__name__)
@@ -71,6 +72,14 @@ class VerificationAgent:
         ).model_dump()
 
     def run(self, question: str, entity_ids: list[str], evidence_ids: list[str]) -> dict:
+        with traced_span("agent.verification_agent", "agent", {
+            "agent.name": "verification_agent",
+            "agent.entity_count": len(entity_ids),
+            "agent.evidence_count": len(evidence_ids),
+        }):
+            return self._run_impl(question, entity_ids, evidence_ids)
+
+    def _run_impl(self, question: str, entity_ids: list[str], evidence_ids: list[str]) -> dict:
         messages = [
             SystemMessage(content=("你是证据验证 Agent。必须调用工具验证证据、来源、时间线、关系和约束，禁止使用模型自身知识。"
                                    "完成全部必要工具后，返回且只返回 JSON："
@@ -81,7 +90,10 @@ class VerificationAgent:
         ]
         calls, observations = [], []
         for step in range(self.max_steps):
-            response = self.model.invoke(messages)
+            with traced_span("agent.model.invoke", "model_operation", {
+                "agent.name": "verification_agent", "agent.step": step + 1,
+            }):
+                response = self.model.invoke(messages)
             messages.append(response)
             if not response.tool_calls:
                 try:
@@ -98,7 +110,13 @@ class VerificationAgent:
                 else:
                     try:
                         logger.info("verification_agent 第 %s 轮调用 %s", step + 1, call["name"])
-                        observation = tool.invoke(call["args"])
+                        metadata = getattr(tool, "metadata", None) or {}
+                        with traced_span(f"tool.{call['name']}", "tool", {
+                            "agent.name": "verification_agent",
+                            "tool.name": call["name"],
+                            "tool.transport": metadata.get("tool_transport", "local"),
+                        }):
+                            observation = tool.invoke(call["args"])
                     except Exception as exc:
                         logger.exception("Verification 工具失败")
                         observation = {"error": str(exc)}

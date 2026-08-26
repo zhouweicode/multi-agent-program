@@ -5,6 +5,7 @@ from math import prod
 from typing import Any
 
 from models.settings import Settings
+from services.telemetry import traced_span
 
 
 def _id_expression(variable: str) -> str:
@@ -68,8 +69,12 @@ class Neo4jGraphRepository:
         return {"backend": "neo4j", "ready": True, "database": self.settings.neo4j_database}
 
     def _read(self, query: str, **parameters: Any) -> list[dict]:
-        with self.driver.session(database=self.settings.neo4j_database) as session:
-            records = session.execute_read(lambda tx: list(tx.run(query, **parameters)))
+        with traced_span("db.neo4j.read", "database", {
+            "db.system": "neo4j", "db.namespace": self.settings.neo4j_database,
+            "db.parameter_count": len(parameters),
+        }):
+            with self.driver.session(database=self.settings.neo4j_database) as session:
+                records = session.execute_read(lambda tx: list(tx.run(query, **parameters)))
         return [{key: _json_value(record[key]) for key in record.keys()} for record in records]
 
     def _managed(self, variable: str) -> str:
@@ -141,8 +146,11 @@ class Neo4jGraphRepository:
                 })
             return {"nodes": nodes, "edges": edges}
 
-        with self.driver.session(database=self.settings.neo4j_database) as session:
-            row = session.execute_read(load_path)
+        with traced_span("db.neo4j.shortest_path", "database", {
+            "db.system": "neo4j", "db.namespace": self.settings.neo4j_database,
+        }):
+            with self.driver.session(database=self.settings.neo4j_database) as session:
+                row = session.execute_read(load_path)
         if row is None:
             return {"found": False, "nodes": [], "edges": [], "hop_count": 0}
         return {"found": True, "nodes": row["nodes"], "edges": row["edges"], "hop_count": len(row["edges"])}

@@ -10,6 +10,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 from mcp import Client
+from services.telemetry import trace_carrier, traced_span
 
 
 def _run_sync(factory: Callable[[], Awaitable[Any]]) -> Any:
@@ -36,8 +37,15 @@ class MCPGateway:
         return _run_sync(self.list_tool_specs_async)
 
     async def call_tool_async(self, name: str, arguments: dict[str, Any]) -> Any:
-        async with Client(self.target, read_timeout_seconds=self.timeout_seconds) as client:
-            result = await client.call_tool(name, arguments, read_timeout_seconds=self.timeout_seconds)
+        with traced_span(f"mcp.client.{name}", "mcp_client", {
+            "mcp.tool.name": name,
+            "mcp.server": str(self.target),
+        }):
+            carrier = trace_carrier()
+            meta = {"graphrag_trace": carrier} if carrier else None
+            async with Client(self.target, read_timeout_seconds=self.timeout_seconds) as client:
+                result = await client.call_tool(name, arguments, read_timeout_seconds=self.timeout_seconds,
+                                                meta=meta)
         if result.is_error:
             raise RuntimeError(f"MCP工具执行失败 {name}: {self._content_text(result.content)}")
         if result.structured_content is not None:

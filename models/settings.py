@@ -63,6 +63,12 @@ class Settings:
     web_search_endpoint: str | None = None
     web_search_timeout: float = 15
     web_search_max_results: int = 5
+    observability_db_path: str = ".runtime/observability.sqlite"
+    workflow_version: str = "stage10.1"
+    prompt_version: str = "prompt-v1"
+    model_input_cost_per_million: float = 0
+    model_output_cost_per_million: float = 0
+    model_cost_currency: str = "USD"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -118,4 +124,10 @@ class Settings:
                    web_search_api_key=os.getenv("WEB_SEARCH_API_KEY"),
                    web_search_endpoint=os.getenv("WEB_SEARCH_ENDPOINT"),
                    web_search_timeout=float(os.getenv("WEB_SEARCH_TIMEOUT", "15")),
-                   web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")))
+                   web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
+                   observability_db_path=os.getenv("OBSERVABILITY_DB_PATH", ".runtime/observability.sqlite"),
+                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage10.1"),
+                   prompt_version=os.getenv("PROMPT_VERSION", "prompt-v1"),
+                   model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),
+                   model_output_cost_per_million=float(os.getenv("MODEL_OUTPUT_COST_PER_MILLION", "0")),
+                   model_cost_currency=os.getenv("MODEL_COST_CURRENCY", "USD"))

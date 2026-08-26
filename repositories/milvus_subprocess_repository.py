@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 from models.settings import Settings
+from services.telemetry import traced_span
 
 
 class MilvusSubprocessEntityRepository:
@@ -29,11 +30,15 @@ class MilvusSubprocessEntityRepository:
             "rrf_k": self.settings.milvus_rrf_k,
             **payload,
         }
-        completed = subprocess.run(
-            [sys.executable, "-m", "scripts.query_milvus_entities"],
-            input=json.dumps(request, ensure_ascii=False), text=True,
-            capture_output=True, timeout=max(5.0, self.settings.model_request_timeout), check=False,
-        )
+        with traced_span(f"db.milvus.{operation}", "database", {
+            "db.system": "milvus", "db.collection.name": self.settings.milvus_collection,
+            "db.transport": "subprocess",
+        }):
+            completed = subprocess.run(
+                [sys.executable, "-m", "scripts.query_milvus_entities"],
+                input=json.dumps(request, ensure_ascii=False), text=True,
+                capture_output=True, timeout=max(5.0, self.settings.model_request_timeout), check=False,
+            )
         if completed.returncode != 0:
             detail = completed.stderr.strip().splitlines()
             raise RuntimeError(detail[-1] if detail else "Milvus worker failed")

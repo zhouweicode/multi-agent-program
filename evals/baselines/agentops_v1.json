@@ -1,0 +1,49 @@
+{
+  "name": "agentops-v1-mock-baseline",
+  "dataset": "evals/golden_v1.jsonl",
+  "expected_case_count": 50,
+  "metrics": {
+    "entity_recall_at_10": 1.0,
+    "entity_auto_precision": 1.0,
+    "routing_accuracy": 1.0,
+    "verification_routing_accuracy": 1.0,
+    "task_routing_accuracy": 1.0,
+    "tool_call_accuracy": 1.0,
+    "evidence_completeness": 1.0,
+    "citation_validity": 1.0,
+    "answer_accuracy": 1.0,
+    "validation_pass_rate": 1.0,
+    "case_pass_rate": 1.0
+  },
+  "minimums": {
+    "entity_recall_at_10": 0.95,
+    "entity_auto_precision": 0.98,
+    "routing_accuracy": 0.95,
+    "verification_routing_accuracy": 0.95,
+    "task_routing_accuracy": 0.95,
+    "tool_call_accuracy": 0.95,
+    "evidence_completeness": 0.98,
+    "citation_validity": 0.98,
+    "answer_accuracy": 0.95,
+    "validation_pass_rate": 0.95,
+    "case_pass_rate": 0.95
+  },
+  "maximums": {
+    "p95_latency_ms": 5000,
+    "average_replans": 1,
+    "average_cost": 0.01
+  },
+  "regression_metrics": [
+    "entity_recall_at_10",
+    "entity_auto_precision",
+    "routing_accuracy",
+    "verification_routing_accuracy",
+    "task_routing_accuracy",
+    "tool_call_accuracy",
+    "evidence_completeness",
+    "citation_validity",
+    "answer_accuracy",
+    "validation_pass_rate",
+    "case_pass_rate"
+  ]
+}

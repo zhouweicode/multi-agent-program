@@ -5,9 +5,11 @@ import json
 from contextlib import asynccontextmanager
 
 from mcp.server import MCPServer
+from mcp.server.context import ServerRequestContext
 
 from models.settings import Settings
 from services.resources import active_release_settings, close_resources
+from services.telemetry import activate_remote_trace, traced_span
 from tools.achievement_tools import aggregate_cooperation as local_aggregate_cooperation
 from tools.achievement_tools import get_author_papers as local_get_author_papers
 from tools.achievement_tools import get_common_papers as local_get_common_papers
@@ -52,6 +54,21 @@ async def _lifespan(_server: MCPServer):
     close_resources()
 
 
+class TraceMiddleware:
+    """Continue the caller trace carried in MCP request metadata."""
+    async def __call__(self, ctx: ServerRequestContext, call_next):
+        meta = dict(ctx.meta or {})
+        carrier = meta.get("graphrag_trace")
+        params = dict(ctx.params or {})
+        tool_name = params.get("name") if ctx.method == "tools/call" else None
+        with activate_remote_trace(carrier):
+            with traced_span(f"mcp.server.{tool_name or ctx.method}", "mcp_server", {
+                "mcp.method": ctx.method,
+                "mcp.tool.name": tool_name,
+            }):
+                return await call_next(ctx)
+
+
 mcp = MCPServer(
     name="tech-kg-tools",
     title="科技知识图谱工具服务",
@@ -59,6 +76,7 @@ mcp = MCPServer(
     instructions="所有查询结果都是证据候选；联网摘要必须经过来源核验后才能作为最终事实。",
     version="1.0.0",
     lifespan=_lifespan,
+    middleware=[TraceMiddleware()],
 )
 
 

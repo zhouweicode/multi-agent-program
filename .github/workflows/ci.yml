@@ -23,3 +23,10 @@ jobs:
       - run: node --check frontend/app.js
       - run: pytest -q
       - run: python -m scripts.evaluate_stage9_e2e
+      - name: Agent golden-set regression gate
+        run: python -m scripts.run_agent_evals --check --output .runtime/eval-report.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agent-eval-report
+          path: .runtime/eval-report.json

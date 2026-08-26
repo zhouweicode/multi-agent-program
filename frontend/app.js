@@ -213,6 +213,107 @@ function renderResult(payload) {
   Object.entries(state.graphState.resolved_entities || {}).forEach(([name, id]) => { const chip = document.createElement("span"); chip.textContent = `${name} · ${id}`; chips.appendChild(chip); });
   renderWebSources(state.graphState);
   $("#answerPanel").classList.remove("hidden"); $("#answerPanel").scrollIntoView({behavior:"smooth", block:"start"}); finishRun("已完成");
+  setTimeout(loadRunOptions, 250);
+}
+
+function runOptionLabel(run) {
+  const version = run.metadata?.workflow_version || "unknown";
+  return `${run.run_id} · ${run.status} · ${version}`;
+}
+
+function setRunOptions(select, runs, selected) {
+  select.innerHTML = "";
+  runs.forEach(run => {
+    const option = document.createElement("option");
+    option.value = run.run_id; option.textContent = runOptionLabel(run);
+    if (run.run_id === selected) option.selected = true;
+    select.appendChild(option);
+  });
+}
+
+async function loadRunOptions() {
+  try {
+    const response = await fetch("/observability/runs?limit=30");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const runs = (await response.json()).runs || [];
+    const previousLeft = $("#leftRunSelect").value;
+    const previousRight = $("#rightRunSelect").value;
+    const left = runs.some(run => run.run_id === previousLeft) ? previousLeft : runs[1]?.run_id || runs[0]?.run_id;
+    const right = runs.some(run => run.run_id === previousRight) ? previousRight : runs[0]?.run_id;
+    setRunOptions($("#leftRunSelect"), runs, left);
+    setRunOptions($("#rightRunSelect"), runs, right);
+    $("#compareRuns").disabled = runs.length < 2;
+    $("#compareEmpty").textContent = runs.length < 2 ? "至少完成两个查询后即可进行 Run 对比。" : "选择两个 Run，查看质量与性能差异。";
+  } catch (error) {
+    $("#compareEmpty").textContent = `运行记录加载失败：${error.message}`;
+  }
+}
+
+function compactNumber(value, digits = 2) {
+  const number = Number(value || 0);
+  return number.toLocaleString("zh-CN", {maximumFractionDigits: digits});
+}
+
+function renderRunHeader(target, run) {
+  const meta = run.metadata || {};
+  target.innerHTML = "";
+  const title = document.createElement("h3"); title.textContent = run.run_id;
+  const detail = document.createElement("p");
+  detail.textContent = `${meta.model_name || meta.model_provider || "unknown model"} · workflow ${meta.workflow_version || "unknown"} · prompt ${meta.prompt_version || "unknown"}`;
+  const status = document.createElement("span"); status.className = `compare-status ${run.status === "COMPLETED" ? "ok" : ""}`; status.textContent = run.status;
+  target.append(title, detail, status);
+}
+
+function renderSpanList(target, spans) {
+  target.innerHTML = "";
+  const ordered = [...spans].sort((a, b) => Number(b.duration_ms) - Number(a.duration_ms)).slice(0, 18);
+  if (!ordered.length) { target.textContent = "该 Run 暂无 Span。"; return; }
+  ordered.forEach(span => {
+    const row = document.createElement("div"); row.className = "compare-span-row";
+    const name = document.createElement("span"); name.textContent = span.name;
+    const metrics = document.createElement("small");
+    metrics.textContent = `${span.kind} · ${compactNumber(span.duration_ms)} ms · ${compactNumber(span.total_tokens, 0)} tokens`;
+    const status = document.createElement("i"); status.className = span.status === "OK" ? "ok" : "error"; status.textContent = span.status;
+    row.append(name, metrics, status); target.appendChild(row);
+  });
+}
+
+function renderCompareMetrics(payload) {
+  const root = $("#compareMetrics"); root.innerHTML = "";
+  const left = payload.left.summary; const right = payload.right.summary; const delta = payload.delta;
+  const successRate = summary => summary.tool_calls ? summary.tool_successes / summary.tool_calls * 100 : 100;
+  const specs = [
+    ["总耗时", `${compactNumber(left.duration_ms)} → ${compactNumber(right.duration_ms)} ms`, `${compactNumber(delta.duration_ms)} ms`],
+    ["Token", `${compactNumber(left.total_tokens, 0)} → ${compactNumber(right.total_tokens, 0)}`, `${compactNumber(delta.total_tokens, 0)}`],
+    ["模型成本", `${compactNumber(left.cost, 6)} → ${compactNumber(right.cost, 6)} ${right.cost_currency}`, `${compactNumber(delta.cost, 6)}`],
+    ["工具成功率", `${compactNumber(successRate(left))}% → ${compactNumber(successRate(right))}%`, `${right.tool_successes}/${right.tool_calls}`],
+    ["重规划", `${left.replan_count} → ${right.replan_count}`, `${delta.replan_count >= 0 ? "+" : ""}${delta.replan_count}`],
+    ["错误数", `${left.error_count} → ${right.error_count}`, `${delta.error_count >= 0 ? "+" : ""}${delta.error_count}`],
+  ];
+  specs.forEach(([label, value, change]) => {
+    const card = document.createElement("div");
+    const name = document.createElement("span"); name.textContent = label;
+    const main = document.createElement("strong"); main.textContent = value;
+    const diff = document.createElement("small"); diff.textContent = `Δ ${change}`;
+    card.append(name, main, diff); root.appendChild(card);
+  });
+}
+
+async function compareSelectedRuns() {
+  const left = $("#leftRunSelect").value; const right = $("#rightRunSelect").value;
+  if (!left || !right || left === right) { $("#compareEmpty").textContent = "请选择两个不同的 Run。"; return; }
+  $("#compareRuns").disabled = true; $("#compareEmpty").textContent = "正在加载 Trace 对比…";
+  try {
+    const response = await fetch(`/observability/compare?left_run_id=${encodeURIComponent(left)}&right_run_id=${encodeURIComponent(right)}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    renderCompareMetrics(payload);
+    renderRunHeader($("#leftRunHeader"), payload.left); renderRunHeader($("#rightRunHeader"), payload.right);
+    renderSpanList($("#leftSpanList"), payload.left.spans); renderSpanList($("#rightSpanList"), payload.right.spans);
+    $("#compareResult").classList.remove("hidden"); $("#compareEmpty").textContent = "Span 按耗时从高到低展示。";
+  } catch (error) {
+    $("#compareEmpty").textContent = `Run 对比失败：${error.message}`;
+  } finally { $("#compareRuns").disabled = false; }
 }
 
 async function handleResponse(response) {
@@ -264,6 +365,9 @@ $("#webSearchToggle").addEventListener("click", () => {
 $("#copyState").addEventListener("click", async () => { await navigator.clipboard.writeText($("#stateJson").textContent); $("#copyState").textContent = "已复制"; setTimeout(() => $("#copyState").textContent = "复制", 1200); });
 $("#closeEventModal").addEventListener("click", () => $("#eventModal").close());
 $("#eventModal").addEventListener("click", event => { if (event.target === $("#eventModal")) $("#eventModal").close(); });
+$("#refreshRuns").addEventListener("click", loadRunOptions);
+$("#compareRuns").addEventListener("click", compareSelectedRuns);
 
 fetch("/health").then(response => response.json()).then(payload => { $("#healthDot").classList.add("online"); $("#healthText").textContent = `Stage ${payload.stage} · ${payload.embedding_provider} · ${payload.entity_backend}`; }).catch(() => { $("#healthText").textContent = "系统离线"; });
 renderWebSearchToggle();
+loadRunOptions();

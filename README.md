@@ -369,20 +369,44 @@ Rule Validator 使用普通 Python 校验 entity_id、共同作者/项目参与�
 - 统一 EvidenceRecord、Neo4j 企业/产业 Service 适配和依赖健康探针；
 - 可重复的 MySQL→Neo4j 同步预览/写入流程；
 - 路由、工具、答案、校验和证据覆盖端到端评测。
+- API → LangGraph → Agent → MCP → 数据库/模型的统一 Trace；
+- 模型 Token/成本、工具成功率、重规划、超时率和 P95 延迟统计；
+- 50 条分层黄金集、CI 回归门禁和前端双 Run 对比。
 
 运行：
 
 ```bash
 pytest -q
 python -m scripts.evaluate_stage9_e2e
+python -m scripts.run_agent_evals --check
 ```
 
 当前测试结果以本机 `pytest -q` 输出为准；真实数据库集成采用单独 smoke test，不进入默认 CI。
 
+## Agent 评测与可观测
+
+每次 API 查询都生成持久化 Trace，并记录 API、LangGraph Node、Agent、模型、Tool、MCP Client/Server
+以及 MySQL、Neo4j、Milvus Span。接口包括：
+
+```text
+GET /observability/summary
+GET /observability/runs
+GET /observability/runs/{run_id}
+GET /observability/compare?left_run_id=...&right_run_id=...
+```
+
+在 `.env` 中设置模型的每百万 Token 单价后，系统按真实 Provider 返回的 usage 计算单次 Run 成本；
+Mock 模型没有真实 Token，成本固定为 0。浏览器页面底部可以选择两个 Run，对比模型、Prompt、工作流版本、
+总耗时、Token、成本、工具成功率、重规划、错误数和最慢 Span。
+
+`evals/golden_v1.jsonl` 固定包含 10 条实体消歧、20 条路由、20 条完整工作流用例。
+CI 使用 `evals/baselines/agentops_v1.json` 同时执行绝对门槛与相对回退检测，失败时阻止合并，并上传评测报告。
+详细设计见 [docs/07_agent_evaluation_observability.md](docs/07_agent_evaluation_observability.md)。
+
 ## 后续阶段建议
 
-第十阶段建议增加 API 鉴权、Redis/Celery 或同类跨进程任务队列、OpenTelemetry 链路追踪，
-并用人工标注的真实问题集校准实体消歧阈值和回答准确率。
+后续可增加 API 鉴权、Redis/Celery 或同类跨进程任务队列，并将当前 vendor-neutral Trace 导出为
+OpenTelemetry/OTLP，接入 Grafana Tempo、Jaeger 或 LangSmith。
 
 第七阶段运行时和任务契约详解见 [docs/03_stage7_runtime.md](docs/03_stage7_runtime.md)。
 
