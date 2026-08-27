@@ -20,6 +20,9 @@ FACT_TYPES = {
     "get_person_company_roles": "company_role",
     "get_company_projects": "company_project",
     "get_company_patents": "company_patent",
+    "search_industry_segments": "industry_segment",
+    "get_chain_structure": "industry_chain",
+    "get_node_companies": "industry_company",
     "get_node_events": "industry_event",
     "rank_top_events": "industry_event",
     "get_neighbors": "graph_relation",
@@ -48,7 +51,8 @@ def _entity_ids(row: dict[str, Any], fallback: list[str]) -> list[str]:
 
 
 def _record_id(row: dict[str, Any], evidence_id: str) -> str:
-    for key in ("paper_id", "project_id", "patent_id", "event_id", "company_id", "entity_id"):
+    for key in ("paper_id", "project_id", "patent_id", "event_id", "company_id", "entity_id",
+                "chain_id", "segment_id", "node_id"):
         if row.get(key) is not None:
             return str(row[key])
     return evidence_id
@@ -104,8 +108,18 @@ def normalize_tool_output(tool_name: str, output: Any, fallback_entity_ids: list
         if not isinstance(row, dict):
             continue
         ids = row.get("evidence_ids") or ([row.get("evidence_id")] if row.get("evidence_id") else [])
+        if not ids and tool_name in {"search_industry_segments", "get_chain_structure", "get_node_companies"} \
+                and not row.get("error"):
+            record_id = _record_id(row, "unknown")
+            evidence_id = "derived_" + hashlib.sha256(
+                f"{tool_name}:{record_id}".encode("utf-8")
+            ).hexdigest()[:20]
+            ids = [evidence_id]
+            row = dict(row) | {"evidence_id": evidence_id}
         source = str(row.get("source_backend") or row.get("source_name") or row.get("source") or
-                     ("derived:tool" if row.get("evidence_ids") else "unknown:tool"))
+                     ("derived:industry_graph" if tool_name in {
+                         "search_industry_segments", "get_chain_structure", "get_node_companies"
+                     } else ("derived:tool" if row.get("evidence_ids") else "unknown:tool")))
         for evidence_id in dict.fromkeys(str(item) for item in ids if item):
             effective_source = ("mock:domain_repository"
                                 if source == "unknown:tool" and evidence_id.startswith("ev_") else source)

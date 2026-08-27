@@ -85,7 +85,7 @@ class QueryRequest(BaseModel):
     conversation_id: str | None = Field(default=None, min_length=8, max_length=128)
     memory_enabled: bool = False
     experience_memory_enabled: bool = True
-    requested_skill: Literal["expert_report"] | None = None
+    requested_skill: Literal["expert_report", "industry_landscape"] | None = None
     skill_input: dict[str, Any] = Field(default_factory=dict)
 
 

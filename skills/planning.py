@@ -45,6 +45,18 @@ CAPABILITY_BINDINGS: dict[str, CapabilityBinding] = {
         required_fact_types=("web_sources",),
         domain="web",
     ),
+    "industry_landscape_core": CapabilityBinding(
+        agent="industry_agent",
+        goal="为产业全景报告检索产业节点，并查询产业链结构、关联企业和重点产业事件",
+        required_fact_types=("industry_segments", "chain_structure", "node_companies", "ranked_events"),
+        domain="industry",
+    ),
+    "external_industry_evidence": CapabilityBinding(
+        agent="web_research_agent",
+        goal="为产业全景报告搜索与目标产业直接相关的公开网页候选证据",
+        required_fact_types=("web_sources",),
+        domain="web",
+    ),
 }
 
 
@@ -54,6 +66,7 @@ def build_skill_plan(
     entity_ids: list[str],
     *,
     is_replan: bool = False,
+    goal_context: str = "",
 ) -> SupervisorPlan:
     """同一能力只展开为一个领域任务；Skill 本身不执行这些任务。"""
     tasks: list[PlannedTask] = []
@@ -67,7 +80,7 @@ def build_skill_plan(
         tasks.append(PlannedTask(
             task_id=f"{prefix}_{skill_id}_{binding.domain}",
             agent=binding.agent,
-            goal=binding.goal,
+            goal=(f"{binding.goal}。用户请求与参数：{goal_context}" if goal_context else binding.goal),
             required_fact_types=list(binding.required_fact_types),
             required_entity_ids=entity_ids,
         ))

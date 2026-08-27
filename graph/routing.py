@@ -57,6 +57,8 @@ def after_rule_validation(state: GraphRAGState) -> str:
         return "supervisor"
     if validation.get("valid") and state.get("requested_skill") == "expert_report":
         return "expert_report"
+    if validation.get("valid") and state.get("requested_skill") == "industry_landscape":
+        return "industry_landscape"
     return "verification_agent" if state.get("requires_verification") and validation.get("valid") else "answer"
 
 

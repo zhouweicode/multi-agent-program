@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from skills.base import SkillSpec
 from skills.expert_report.spec import EXPERT_REPORT_SPEC
+from skills.industry_landscape.spec import INDUSTRY_LANDSCAPE_SPEC
 
 
 class SkillRegistry:
     def __init__(self, specs: tuple[SkillSpec, ...] | None = None):
-        items = specs or (EXPERT_REPORT_SPEC,)
+        items = specs or (EXPERT_REPORT_SPEC, INDUSTRY_LANDSCAPE_SPEC)
         self._specs = {item.skill_id: item for item in items}
 
     def get(self, skill_id: str) -> SkillSpec:

@@ -23,6 +23,7 @@ FACT_TYPE_TO_TOOL = {
     "company_roles": "get_person_company_roles",
     "company_projects": "get_company_projects",
     "company_patents": "get_company_patents",
+    "industry_segments": "search_industry_segments",
     "chain_structure": "get_chain_structure",
     "node_companies": "get_node_companies",
     "node_events": "get_node_events",

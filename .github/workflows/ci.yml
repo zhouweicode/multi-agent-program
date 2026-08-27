@@ -29,6 +29,8 @@ jobs:
         run: python -m scripts.run_harness_evals --check --output .runtime/harness-eval-report.json
       - name: Expert report skill regression gate
         run: python -m scripts.run_expert_report_evals --check --output .runtime/expert-report-eval.json
+      - name: Industry landscape skill regression gate
+        run: python -m scripts.run_industry_landscape_evals --check --output .runtime/industry-landscape-eval.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -37,3 +39,4 @@ jobs:
             .runtime/eval-report.json
             .runtime/harness-eval-report.json
             .runtime/expert-report-eval.json
+            .runtime/industry-landscape-eval.json

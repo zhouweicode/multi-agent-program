@@ -30,6 +30,7 @@ const eventInfo = {
   MERGE_COMPLETED: ["merge", "领域结果与证据已合并"], RULE_VALIDATION_COMPLETED: ["validator", "Rule Validator 校验完成"],
   VERIFICATION_COMPLETED: ["verification", "Verification Agent 判断完成"], ANSWER_GENERATED: ["answer", "最终答案已生成"],
   EXPERT_REPORT_GENERATED: ["skill", "专家报告已完成证据化组装"],
+  INDUSTRY_LANDSCAPE_GENERATED: ["skill", "产业全景报告已完成证据化组装"],
   QUERY_RESUMED: ["entity", "从实体消歧中断点恢复"], QUERY_FAILED: ["answer", "查询执行失败"],
   NODE_EXECUTED: [null, "LangGraph Node 执行完成"], NODE_INTERRUPTED: [null, "LangGraph Node 已中断"],
   NODE_FAILED: [null, "LangGraph Node 执行失败"], RUN_STATUS_CHANGED: [null, "Graph Run 状态已更新"]
@@ -45,7 +46,8 @@ const nodeLabels = {
   enterprise_agent: "EnterpriseRelationAgent", industry_agent: "IndustryChainAgent",
   graph_reasoning_agent: "GraphReasoningAgent", merge: "Merge", validator: "Rule Validator",
   web_research_agent: "WebResearchAgent",
-  verification_agent: "VerificationAgent", expert_report: "Expert Report Composer", answer: "Answer"
+  verification_agent: "VerificationAgent", expert_report: "Expert Report Composer",
+  industry_landscape: "Industry Landscape Composer", answer: "Answer"
 };
 
 function newThreadId() { return `ui-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
@@ -347,8 +349,11 @@ function renderExpertReport(report) {
     const numbers = (ids || []).map(id => evidenceOrder.get(id)).filter(Boolean);
     return numbers.length ? `〔证据 ${numbers.join(",")}〕` : "";
   };
-  addText("h2", `${report.entity_name}专家报告`);
-  addText("p", `实体 ${report.entity_id} · ${report.report_type} · 面向 ${report.audience} · 证据覆盖率 ${(Number(report.evidence_coverage || 0) * 100).toFixed(0)}%`, "report-meta");
+  const isIndustry = report.skill_id === "industry_landscape";
+  const industryTitle = report.industry_name?.endsWith("产业") || report.industry_name?.endsWith("产业链") || report.industry_name?.endsWith("行业")
+    ? `${report.industry_name}全景报告` : `${report.industry_name}产业全景报告`;
+  addText("h2", isIndustry ? industryTitle : `${report.entity_name}专家报告`);
+  addText("p", `${isIndustry ? "产业" : "实体"} ${isIndustry ? report.industry_id : report.entity_id} · ${report.report_type} · 面向 ${report.audience} · 证据覆盖率 ${(Number(report.evidence_coverage || 0) * 100).toFixed(0)}%`, "report-meta");
   addText("h3", "执行摘要"); addText("p", report.executive_summary || "");
   (report.sections || []).forEach(section => {
     addText("h3", section.title);

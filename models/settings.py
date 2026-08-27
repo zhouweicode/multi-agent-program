@@ -88,7 +88,7 @@ class Settings:
     query_experience_min_samples: int = 5
     query_experience_min_similarity: float = 0.72
     query_experience_min_confidence: float = 0.75
-    workflow_version: str = "stage12-expert-report-skill"
+    workflow_version: str = "stage12-runtime-skills"
     prompt_version: str = "prompt-v1"
     model_input_cost_per_million: float = 0
     model_output_cost_per_million: float = 0
@@ -186,7 +186,7 @@ class Settings:
                    query_experience_min_samples=int(os.getenv("QUERY_EXPERIENCE_MIN_SAMPLES", "5")),
                    query_experience_min_similarity=float(os.getenv("QUERY_EXPERIENCE_MIN_SIMILARITY", "0.72")),
                    query_experience_min_confidence=float(os.getenv("QUERY_EXPERIENCE_MIN_CONFIDENCE", "0.75")),
-                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage12-expert-report-skill"),
+                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage12-runtime-skills"),
                    prompt_version=os.getenv("PROMPT_VERSION", "prompt-v1"),
                    model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),
                    model_output_cost_per_million=float(os.getenv("MODEL_OUTPUT_COST_PER_MILLION", "0")),

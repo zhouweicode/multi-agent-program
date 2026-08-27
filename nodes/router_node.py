@@ -8,6 +8,7 @@ from services.observability import emit_event
 from services.resources import get_entity_service
 from services.telemetry import traced_span
 from skills.expert_report.spec import normalize_expert_report_input
+from skills.industry_landscape.spec import normalize_industry_landscape_input
 from skills.registry import skill_registry
 
 logger = logging.getLogger(__name__)
@@ -103,13 +104,17 @@ def router_node(state: GraphRAGState) -> dict:
     skill_update = {}
     if skill:
         # Skill 查询统一进入 Supervisor；Skill 只声明能力，不能绕过 Planner 直达 Agent。
-        output = output.model_copy(update={"complexity": "complex", "primary_domain": "talent",
+        primary_domain = "industry" if skill.skill_id == "industry_landscape" else "talent"
+        output = output.model_copy(update={"complexity": "complex", "primary_domain": primary_domain,
                                            "requires_verification": False})
-        skill_input = normalize_expert_report_input(state["question"], state.get("skill_input"))
+        skill_input = (normalize_industry_landscape_input(state["question"], state.get("skill_input"))
+                       if skill.skill_id == "industry_landscape" else
+                       normalize_expert_report_input(state["question"], state.get("skill_input")))
         skill_update = {"requested_skill": skill.skill_id, "skill_version": skill.version,
                         "skill_input": skill_input}
         emit_event("SKILL_SELECTED", thread_id=state.get("thread_id"), skill_id=skill.skill_id,
-                   skill_version=skill.version, report_type=skill_input["report_type"])
+                   skill_version=skill.version, report_type=skill_input["report_type"],
+                   subject=skill_input.get("industry_query"))
     # 权威库用于纠正机构误判，但不能静默删掉问题中尚未入库的人名。
     try:
         discovered = get_entity_service().mentions_in_text(state["question"])

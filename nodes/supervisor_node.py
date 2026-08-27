@@ -8,7 +8,8 @@ from models.llm import ModelFactory
 from models.schemas import PlannedTask
 from services.observability import emit_event
 from services.telemetry import traced_span
-from skills.expert_report.spec import selected_capabilities
+from skills.expert_report.spec import selected_capabilities as expert_report_capabilities
+from skills.industry_landscape.spec import selected_capabilities as industry_landscape_capabilities
 from skills.planning import CAPABILITY_BINDINGS, build_skill_plan
 from skills.registry import skill_registry
 
@@ -64,8 +65,13 @@ def supervisor_node(state: GraphRAGState) -> dict:
     if skill_id:
         spec = skill_registry.get(skill_id)
         instructions = spec.load_instructions()
-        capabilities = selected_capabilities(state.get("skill_input", {}), state.get("web_search_enabled", True))
-        plan = build_skill_plan(skill_id, capabilities, entity_ids, is_replan=is_replan)
+        capability_selector = (industry_landscape_capabilities if skill_id == "industry_landscape"
+                               else expert_report_capabilities)
+        capabilities = capability_selector(state.get("skill_input", {}), state.get("web_search_enabled", True))
+        plan = build_skill_plan(
+            skill_id, capabilities, entity_ids, is_replan=is_replan,
+            goal_context=f"{state['question']}；配置={state.get('skill_input', {})}",
+        )
         required_domains = list(dict.fromkeys(
             CAPABILITY_BINDINGS[item].domain for item in spec.required_capabilities
         ))

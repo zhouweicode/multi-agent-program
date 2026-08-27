@@ -112,8 +112,12 @@ class MockToolCallingModel:
             "talent": talent_specs,
             "achievement": achievement_specs,
             "enterprise": [("get_person_company_roles", {"entity_ids": entity_ids}), ("get_company_projects", {"company_id": "company_001"}), ("get_company_patents", {"company_id": "company_001"})],
-            "industry": [("get_chain_structure", {"chain_id": "chain_ai"}), ("get_node_companies", {"node_id": "node_model"}),
-                         ("get_node_events", {"node_id": "node_model"}), ("rank_top_events", {"node_id": "node_model", "top_n": 2})],
+            "industry": ([("search_industry_segments", {"query": "", "limit": 10})]
+                         if "产业全景报告" in goal else []) + [
+                         ("get_chain_structure", {"chain_id": "chain_ai"}),
+                         ("get_node_companies", {"node_id": "node_model"}),
+                         ("get_node_events", {"node_id": "node_model"}),
+                         ("rank_top_events", {"node_id": "node_model", "top_n": 5 if "产业全景报告" in goal else 2})],
             "graph": [("get_neighbors", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001"}),
                       ("find_path", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2}),
                       ("calculate_path_strength", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2})],

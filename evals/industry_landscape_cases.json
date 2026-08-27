@@ -1,0 +1,36 @@
+[
+  {
+    "case_id": "industry_landscape_comprehensive",
+    "scenario": "workflow",
+    "input": {"question": "请生成人工智能产业全景报告"},
+    "expected": {
+      "agents": ["industry_agent"],
+      "sections": ["industry_scope", "chain_structure", "company_landscape", "key_events"],
+      "evidence_coverage": 1.0,
+      "validation_valid": true
+    }
+  },
+  {
+    "case_id": "industry_landscape_brief",
+    "scenario": "workflow",
+    "input": {"question": "请生成人工智能简版产业全景报告，展示TOP3"},
+    "expected": {
+      "agents": ["industry_agent"],
+      "report_type": "brief",
+      "top_n_companies": 3,
+      "top_n_events": 3,
+      "validation_valid": true
+    }
+  },
+  {
+    "case_id": "industry_landscape_optional_web_timeout",
+    "scenario": "optional_failure",
+    "expected": {"validation_valid": true, "needs_replan": false, "has_warning": true}
+  },
+  {
+    "case_id": "industry_landscape_input_guard",
+    "scenario": "input_guard",
+    "input": {"question": "生成人工智能产业全景报告", "top_n_companies": 200, "top_n_events": 0},
+    "expected": {"industry_query": "人工智能", "top_n_companies": 50, "top_n_events": 1}
+  }
+]

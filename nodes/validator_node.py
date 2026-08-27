@@ -26,7 +26,7 @@ def validator_node(state: GraphRAGState) -> dict:
         else:
             errors.append(message)
 
-    if skill_id and len(entity_ids) != 1:
+    if skill_id == "expert_report" and len(entity_ids) != 1:
         errors.append("专家报告 Skill 只支持一个已完成消歧的专家实体")
     entity_service, evidence_service = get_entity_service(), get_evidence_service()
     for entity_id in entity_ids:
@@ -126,6 +126,13 @@ def validator_node(state: GraphRAGState) -> dict:
             if path["hop_count"] != len(path["edges"]) or len(path["nodes"]) != path["hop_count"] + 1:
                 add_domain_error("graph", "图路径 hop_count 与节点/边数量不一致")
     industry_result = state.get("industry_result", {})
+    if skill_id == "industry_landscape":
+        industry_facts = {fact.get("tool"): fact.get("data") for fact in industry_result.get("facts", [])}
+        if not industry_facts.get("search_industry_segments"):
+            errors.append("产业全景报告未检索到候选产业节点")
+        chain_data = industry_facts.get("get_chain_structure")
+        if not isinstance(chain_data, dict) or chain_data.get("error"):
+            errors.append("产业全景报告未取得有效产业链结构")
     for fact in industry_result.get("facts", []):
         if fact["tool"] == "rank_top_events":
             scores = [row["importance"] for row in fact["data"]]
