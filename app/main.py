@@ -19,6 +19,7 @@ from services.checkpoint_service import (
     build_sqlite_checkpointer,
     close_sqlite_checkpointer,
 )
+from services.conversation_memory import close_conversation_memory, conversation_memory_repository
 from services.observability import clear_events, emit_event, get_events
 from services.telemetry import (
     activate_trace,
@@ -44,6 +45,7 @@ from services.run_service import RunManager
 async def lifespan(_app: FastAPI):
     yield
     runs.close()
+    close_conversation_memory()
     close_resources()
     close_sqlite_checkpointer()
 
@@ -72,6 +74,8 @@ class QueryRequest(BaseModel):
     thread_id: str | None = Field(default=None, min_length=8, max_length=128)
     max_replans: int = Field(default=2, ge=0, le=10)
     web_search_enabled: bool = True
+    conversation_id: str | None = Field(default=None, min_length=8, max_length=128)
+    memory_enabled: bool = False
 
 
 class ResumeRequest(BaseModel):
@@ -161,6 +165,7 @@ def query(request: QueryRequest) -> JSONResponse:
 @app.post("/queries", status_code=202)
 def create_query(request: QueryRequest) -> JSONResponse:
     run_id = request.thread_id or f"run-{uuid4().hex}"
+    conversation_id = (request.conversation_id or f"conv-{uuid4().hex}") if request.memory_enabled else None
     if runs.exists(run_id) or _checkpoint_exists(run_id):
         raise HTTPException(status_code=409, detail="run_id 已存在，请为新查询使用新的 run_id")
     trace_context = prepare_run_trace(run_id, run_metadata())
@@ -172,9 +177,12 @@ def create_query(request: QueryRequest) -> JSONResponse:
                 runs.create(run_id)
                 emit_event("QUERY_STARTED", thread_id=run_id,
                            node_input={"question": request.question, "run_id": run_id, "max_replans": request.max_replans,
-                                       "web_search_enabled": request.web_search_enabled})
+                                       "web_search_enabled": request.web_search_enabled,
+                                       "memory_enabled": request.memory_enabled,
+                                       "conversation_id": conversation_id})
                 initial = {"thread_id": run_id, "question": request.question, "replan_count": 0,
                            "max_replans": request.max_replans, "web_search_enabled": request.web_search_enabled,
+                           "conversation_id": conversation_id, "memory_enabled": request.memory_enabled,
                            "resolved_entities": {}, "task_history": []}
                 runs.submit(run_id, lambda: graph.invoke(initial, config=_config(run_id)), trace_context=trace_context)
                 submitted = True
@@ -184,7 +192,33 @@ def create_query(request: QueryRequest) -> JSONResponse:
             finish_run_trace(trace_context, "FAILED")
         raise
     return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id,
+                                                   "conversation_id": conversation_id,
+                                                   "memory_enabled": request.memory_enabled,
                                                    "trace_id": trace_context.trace_id, "status": "RUNNING"})
+
+
+def _validate_conversation_id(conversation_id: str) -> None:
+    if not 8 <= len(conversation_id) <= 128:
+        raise HTTPException(status_code=422, detail="conversation_id 长度必须在 8 到 128 之间")
+
+
+@app.get("/conversations/{conversation_id}/memory")
+def get_conversation_memory(conversation_id: str) -> dict:
+    _validate_conversation_id(conversation_id)
+    memory = conversation_memory_repository().get(conversation_id)
+    # API 只返回上下文元数据；历史最终答案保留在存储中但不在此接口批量暴露。
+    return {key: value for key, value in memory.items() if key != "turns"} | {
+        "recent_turns": memory.get("turns", [])
+    }
+
+
+@app.delete("/conversations/{conversation_id}/memory")
+def clear_conversation_memory(conversation_id: str) -> dict:
+    _validate_conversation_id(conversation_id)
+    result = conversation_memory_repository().clear(conversation_id)
+    emit_event("MEMORY_CLEARED", conversation_id=conversation_id,
+               deleted_turns=result["deleted_turns"], deleted_entities=result["deleted_entities"])
+    return result
 
 
 @app.post("/queries/{run_id}/resume", status_code=202)

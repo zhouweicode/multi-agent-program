@@ -1,8 +1,19 @@
 const $ = (selector) => document.querySelector(selector);
-const state = { threadId: null, cursor: 0, events: [], eventSource: null, streaming: false, graphState: {}, running: false, stopping: false, webSearchEnabled: true };
+const state = {
+  threadId: null, cursor: 0, events: [], eventSource: null, streaming: false,
+  graphState: {}, running: false, stopping: false, webSearchEnabled: true,
+  conversationId: sessionStorage.getItem("graphrag.conversationId"),
+  memoryEnabled: sessionStorage.getItem("graphrag.memoryEnabled") === "true",
+  memoryEntities: [], memoryTurnCount: 0,
+};
 
 const eventInfo = {
-  QUERY_STARTED: ["query", "查询已进入 LangGraph"], ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
+  QUERY_STARTED: ["query", "查询已进入 LangGraph"],
+  MEMORY_RECALLED: ["memory", "已召回当前会话记忆"],
+  MEMORY_REFERENCE_RESOLVED: ["memory", "已通过会话记忆完成指代解析"],
+  MEMORY_REFERENCE_AMBIGUOUS: ["memory", "会话指代存在多个候选，等待确认"],
+  MEMORY_WRITTEN: ["memory", "本轮实体已写入会话记忆"],
+  ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
   ENTITY_RESOLUTION_INTERRUPTED: ["entity", "检测到同名实体，等待用户确认"], ENTITY_RESOLUTION_COMPLETED: ["entity", "实体消歧完成"],
   ENTITY_NOT_FOUND: ["entity", "知识库中未找到实体"],
   SUPERVISOR_PLANNED: ["supervisor", "Supervisor 已生成执行计划"], AGENT_TOOL_CALLED: ["agents", "Agent 发起 Tool Call"],
@@ -15,6 +26,8 @@ const eventInfo = {
 };
 
 const nodeLabels = {
+  conversation_memory_recall: "Conversation Memory Recall",
+  conversation_memory_writeback: "Conversation Memory Writeback",
   router: "Router", entity_resolution: "Entity Resolution", supervisor: "Supervisor",
   talent_agent: "TalentAgent", achievement_agent: "AchievementAgent",
   enterprise_agent: "EnterpriseRelationAgent", industry_agent: "IndustryChainAgent",
@@ -24,6 +37,7 @@ const nodeLabels = {
 };
 
 function newThreadId() { return `ui-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
+function newConversationId() { return `conv-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
 function setRunStatus(text, running = false) { const el = $("#runStatus"); el.textContent = text; el.classList.toggle("running", running); }
 function setSubmitMode(mode) {
   const button = $("#submitBtn");
@@ -33,6 +47,8 @@ function setSubmitMode(mode) {
   button.classList.toggle("stopping", state.stopping);
   button.disabled = state.stopping;
   $("#webSearchToggle").disabled = state.running;
+  $("#conversationMemoryToggle").disabled = state.running;
+  $("#clearConversationMemory").disabled = state.running || !state.conversationId;
   $("#submitLabel").textContent = mode === "running" ? "停止分析" : mode === "stopping" ? "正在停止" : "开始分析";
   $("#submitIcon").textContent = mode === "running" ? "■" : mode === "stopping" ? "…" : "→";
 }
@@ -42,6 +58,46 @@ function renderWebSearchToggle() {
   button.setAttribute("aria-pressed", String(state.webSearchEnabled));
   button.title = state.webSearchEnabled ? "点击关闭联网搜索" : "点击开启联网搜索";
   $("#webSearchToggleLabel").textContent = `联网搜索：${state.webSearchEnabled ? "已开启" : "已关闭"}`;
+}
+function ensureConversationId() {
+  if (!state.conversationId) {
+    state.conversationId = newConversationId();
+    sessionStorage.setItem("graphrag.conversationId", state.conversationId);
+  }
+  return state.conversationId;
+}
+function renderConversationMemory() {
+  const button = $("#conversationMemoryToggle");
+  button.classList.toggle("enabled", state.memoryEnabled);
+  button.setAttribute("aria-pressed", String(state.memoryEnabled));
+  button.title = state.memoryEnabled ? "点击关闭对话记忆（不会删除已有记忆）" : "点击开启对话记忆";
+  $("#conversationMemoryToggleLabel").textContent = `对话记忆：${state.memoryEnabled ? "已开启" : "已关闭"}`;
+  $("#clearConversationMemory").disabled = state.running || !state.conversationId;
+  $("#memoryContext").classList.toggle("hidden", !state.memoryEnabled);
+  const root = $("#memoryEntityChips"); root.innerHTML = "";
+  if (!state.memoryEntities.length) {
+    const empty = document.createElement("span"); empty.textContent = "尚未记住实体"; root.appendChild(empty);
+  } else {
+    state.memoryEntities.forEach(entity => {
+      const chip = document.createElement("span");
+      chip.textContent = `${entity.name}${entity.organization ? ` · ${entity.organization}` : ""}`;
+      root.appendChild(chip);
+    });
+  }
+  $("#memoryTurnCount").textContent = `${state.memoryTurnCount} 轮对话`;
+}
+async function refreshConversationMemory() {
+  if (!state.conversationId) { state.memoryEntities = []; state.memoryTurnCount = 0; renderConversationMemory(); return; }
+  try {
+    const response = await fetch(`/conversations/${encodeURIComponent(state.conversationId)}/memory`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const memory = await response.json();
+    state.memoryEntities = memory.entities || [];
+    state.memoryTurnCount = Number(memory.turn_count || 0);
+  } catch (error) {
+    console.warn("会话记忆加载失败", error);
+  }
+  renderConversationMemory();
 }
 function finishRun(statusText) {
   setSubmitMode("idle");
@@ -68,6 +124,7 @@ function updateFlow(event) {
     if (el) { document.querySelectorAll(".flow-node.active").forEach(x => x.classList.remove("active")); el.classList.add(event.event.endsWith("COMPLETED") || event.event === "ANSWER_GENERATED" ? "done" : "active"); }
   }
   if (event.event === "ENTITY_RESOLUTION_INTERRUPTED") setRunStatus("等待实体选择");
+  if (event.event === "MEMORY_REFERENCE_AMBIGUOUS") setRunStatus("等待指代确认");
   if (event.event === "ANSWER_GENERATED") setRunStatus("已完成");
 }
 
@@ -212,6 +269,11 @@ function renderResult(payload) {
   const chips = $("#entityChips"); chips.innerHTML = "";
   Object.entries(state.graphState.resolved_entities || {}).forEach(([name, id]) => { const chip = document.createElement("span"); chip.textContent = `${name} · ${id}`; chips.appendChild(chip); });
   renderWebSources(state.graphState);
+  if (state.memoryEnabled) {
+    state.memoryEntities = state.graphState.conversation_entities || state.memoryEntities;
+    state.memoryTurnCount = Number(state.graphState.conversation_turn_count || state.memoryTurnCount);
+    renderConversationMemory();
+  }
   $("#answerPanel").classList.remove("hidden"); $("#answerPanel").scrollIntoView({behavior:"smooth", block:"start"}); finishRun("已完成");
   setTimeout(loadRunOptions, 250);
 }
@@ -320,6 +382,10 @@ async function handleResponse(response) {
   if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.detail || `HTTP ${response.status}`); }
   const payload = await response.json();
   state.threadId = payload.run_id || payload.thread_id || state.threadId;
+  if (payload.conversation_id) {
+    state.conversationId = payload.conversation_id;
+    sessionStorage.setItem("graphrag.conversationId", state.conversationId);
+  }
   if (payload.status === "RUNNING") { setSubmitMode("running"); setRunStatus("执行中", true); startEventStream(); }
   else if (payload.status === "NEED_USER_SELECTION") { showCandidates(payload.interrupt); finishRun("等待实体选择"); }
   else { renderResult(payload); stopEventStream(); }
@@ -330,7 +396,7 @@ $("#queryForm").addEventListener("submit", async event => {
   if (state.running) { await cancelCurrentAnalysis(); return; }
   resetUI(); state.threadId = newThreadId(); setSubmitMode("running");
   const button = $("#submitBtn"); button.disabled = true;
-  try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value), web_search_enabled:state.webSearchEnabled})}); await handleResponse(response); }
+  try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value), web_search_enabled:state.webSearchEnabled, memory_enabled:state.memoryEnabled, conversation_id:state.memoryEnabled ? ensureConversationId() : null})}); await handleResponse(response); }
   catch (error) { finishRun("执行失败"); alert(`执行失败：${error.message}`); stopEventStream(); }
   finally { if (!state.stopping) button.disabled = false; }
 });
@@ -362,6 +428,24 @@ $("#webSearchToggle").addEventListener("click", () => {
   state.webSearchEnabled = !state.webSearchEnabled;
   renderWebSearchToggle();
 });
+$("#conversationMemoryToggle").addEventListener("click", async () => {
+  if (state.running) return;
+  state.memoryEnabled = !state.memoryEnabled;
+  sessionStorage.setItem("graphrag.memoryEnabled", String(state.memoryEnabled));
+  if (state.memoryEnabled) ensureConversationId();
+  await refreshConversationMemory();
+});
+$("#clearConversationMemory").addEventListener("click", async () => {
+  if (state.running || !state.conversationId) return;
+  if (!window.confirm("确认清除当前对话的全部记忆吗？此操作不会删除知识图谱数据。")) return;
+  const response = await fetch(`/conversations/${encodeURIComponent(state.conversationId)}/memory`, {method:"DELETE"});
+  if (!response.ok) { const payload = await response.json().catch(() => ({})); alert(`清除失败：${payload.detail || `HTTP ${response.status}`}`); return; }
+  state.conversationId = newConversationId();
+  sessionStorage.setItem("graphrag.conversationId", state.conversationId);
+  state.memoryEntities = []; state.memoryTurnCount = 0;
+  renderConversationMemory();
+  alert("当前对话记忆已清空，后续问题将从新的会话开始。");
+});
 $("#copyState").addEventListener("click", async () => { await navigator.clipboard.writeText($("#stateJson").textContent); $("#copyState").textContent = "已复制"; setTimeout(() => $("#copyState").textContent = "复制", 1200); });
 $("#closeEventModal").addEventListener("click", () => $("#eventModal").close());
 $("#eventModal").addEventListener("click", event => { if (event.target === $("#eventModal")) $("#eventModal").close(); });
@@ -370,4 +454,6 @@ $("#compareRuns").addEventListener("click", compareSelectedRuns);
 
 fetch("/health").then(response => response.json()).then(payload => { $("#healthDot").classList.add("online"); $("#healthText").textContent = `Stage ${payload.stage} · ${payload.embedding_provider} · ${payload.entity_backend}`; }).catch(() => { $("#healthText").textContent = "系统离线"; });
 renderWebSearchToggle();
+renderConversationMemory();
+if (state.memoryEnabled) refreshConversationMemory();
 loadRunOptions();

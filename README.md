@@ -26,6 +26,7 @@
 - 领域Tool支持`local/mcp`双传输：local模式进程内调用；MCP模式从独立Server动态发现白名单工具并通过Streamable HTTP执行。
 - MCP Server复用现有Service/Repository，公开人才、成果、企业、产业、图检索、证据验证和可选联网搜索共七组能力；LangGraph控制节点保持本地。
 - WebResearchAgent仅在问题明确要求联网、最新资料、官网、新闻或外部查证时执行；网页结果作为带URL的外部候选证据，不覆盖图谱事实，也不自动回写图谱。
+- 对话记忆使用独立 `conversation_id` 跨多个 Run 保存已确认实体；Memory Node 在 Router 前解析“他/她/该教授”等指代，在 Answer 后写回，并与知识图谱事实库隔离。
 
 ## 领域能力
 
@@ -208,6 +209,7 @@ export MCP_SERVER_URL=http://127.0.0.1:8100/mcp
 
 - 输入自然语言问题并创建独立 `thread_id`；
 - 使用“联网搜索”按钮按查询开启或关闭 WebResearchAgent；关闭时后端不会构建联网 Agent 或调用 Tavily/MCP；
+- 使用“对话记忆”按钮开启多轮实体指代；“清除记忆”会删除当前会话的轮次和实体焦点，但不会删除知识图谱数据；
 - 实时查看 Router、Entity Resolution、Supervisor、Domain Agent、Tool、Merge、Validator、Verification 和 Answer 事件；
 - 在检测到同名专家时选择候选 `entity_id`，从 LangGraph interrupt 中断点恢复；
 - 查看最终中文答案、规则校验状态、实体 ID 和完整 `GraphRAGState`；
@@ -260,6 +262,8 @@ uvicorn app.main:app --reload
 | `GET` | `/queries/{run_id}` | 查询运行状态，包括 `ENTITY_NOT_FOUND/CANCELLED/TIMED_OUT` |
 | `GET` | `/queries/{run_id}/stream` | SSE 推送 trace 与终态 |
 | `GET` | `/queries/{run_id}/history` | 查询 SQLite Checkpoint 历史 |
+| `GET` | `/conversations/{conversation_id}/memory` | 查询当前会话的轮次和实体焦点 |
+| `DELETE` | `/conversations/{conversation_id}/memory` | 清除当前会话记忆，不影响知识图谱 |
 | `GET` | `/queries/{run_id}/events` | 兼容性增量事件接口 |
 | `GET` | `/health` | 查看阶段、模型后端和 Checkpointer |
 | `GET` | `/health/dependencies` | 主动探测当前启用的 MySQL、Milvus、Neo4j 或 Mock 后端 |

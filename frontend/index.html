@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>科技知识图谱 · Multi-Agent GraphRAG</title>
-  <link rel="icon" href="/static/favicon.svg?v=20260826-3" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=20260826-3">
-  <link rel="stylesheet" href="/static/layout-fix.css?v=20260826-3">
+  <link rel="icon" href="/static/favicon.svg?v=20260826-4" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v=20260826-4">
+  <link rel="stylesheet" href="/static/layout-fix.css?v=20260826-4">
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -49,12 +49,22 @@
             <button type="button" data-example="联网查证 Neo4j GraphRAG 当前支持的检索方式，列出官网等公开来源，并说明哪些内容还需要进一步验证。">联网研究</button>
           </div>
           <div class="query-options">
+            <button id="conversationMemoryToggle" class="web-search-toggle memory-toggle" type="button" aria-pressed="false" title="点击开启对话记忆">
+              <span class="web-toggle-dot" aria-hidden="true"></span>
+              <span id="conversationMemoryToggleLabel">对话记忆：已关闭</span>
+            </button>
+            <button id="clearConversationMemory" class="memory-clear" type="button" disabled>清除记忆</button>
             <button id="webSearchToggle" class="web-search-toggle enabled" type="button" aria-pressed="true" title="点击关闭联网搜索">
               <span class="web-toggle-dot" aria-hidden="true"></span>
               <span id="webSearchToggleLabel">联网搜索：已开启</span>
             </button>
             <label class="replan-label">最大重规划 <input id="maxReplans" type="number" min="0" max="10" value="2"></label>
           </div>
+        </div>
+        <div id="memoryContext" class="memory-context hidden">
+          <span class="memory-context-label">当前会话记忆</span>
+          <div id="memoryEntityChips" class="memory-entity-chips"><span>尚未记住实体</span></div>
+          <small id="memoryTurnCount">0 轮对话</small>
         </div>
       </form>
     </section>
@@ -68,11 +78,13 @@
           <div id="flow" class="flow">
             <div class="flow-node" data-node="query"><i>01</i><strong>User Query</strong><small>问题进入系统</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="router"><i>02</i><strong>Router</strong><small>意图与领域分类</small></div>
+            <div class="flow-node optional" data-node="memory"><i>02</i><strong>Memory</strong><small>会话召回与指代解析</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="entity"><i>03</i><strong>Entity Resolution</strong><small>MySQL + BGE-M3 + RRF</small></div>
+            <div class="flow-node" data-node="router"><i>03</i><strong>Router</strong><small>意图与领域分类</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="supervisor"><i>04</i><strong>Supervisor</strong><small>任务拆解与调度</small></div>
+            <div class="flow-node" data-node="entity"><i>04</i><strong>Entity Resolution</strong><small>MySQL + BGE-M3 + RRF</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="supervisor"><i>05</i><strong>Supervisor</strong><small>任务拆解与调度</small></div>
             <span class="connector">→</span>
             <div class="agent-cluster" data-node="agents">
               <span data-agent="talent_agent">Talent</span><span data-agent="achievement_agent">Achievement</span>
@@ -161,6 +173,6 @@
     </div>
   </dialog>
   <footer>GraphRAG Studio · 数据库返回什么，答案就只说什么</footer>
-  <script src="/static/app.js?v=20260826-3" defer></script>
+  <script src="/static/app.js?v=20260826-4" defer></script>
 </body>
 </html>

@@ -23,12 +23,16 @@ def test_frontend_index_and_assets_are_served():
     assert "联网研究" in page.text
     assert 'data-agent="web_research_agent"' in page.text
     assert 'id="webSearchToggle"' in page.text
+    assert 'id="conversationMemoryToggle"' in page.text
+    assert 'id="clearConversationMemory"' in page.text
+    assert 'id="memoryEntityChips"' in page.text
+    assert "对话记忆：已关闭" in page.text
     assert 'id="webSourcesPanel"' in page.text
     assert "联网搜索：已开启" in page.text
     assert "深圳科技大学003的高芳" in page.text
     assert "上海科技大学002的赵强" in page.text
     assert "李明" not in page.text
-    assert '/static/app.js?v=20260826-3' in page.text
+    assert '/static/app.js?v=20260826-4' in page.text
     assert 'id="runComparePanel"' in page.text
     assert 'id="leftRunSelect"' in page.text
     assert 'id="rightRunSelect"' in page.text
@@ -45,6 +49,9 @@ def test_frontend_index_and_assets_are_served():
     assert "/cancel" in script.text
     assert "WebResearchAgent" in script.text
     assert "web_search_enabled:state.webSearchEnabled" in script.text
+    assert "memory_enabled:state.memoryEnabled" in script.text
+    assert "/memory" in script.text
+    assert "refreshConversationMemory" in script.text
     assert "renderWebSources" in script.text
     assert "/observability/compare" in script.text
     assert "loadRunOptions" in script.text
@@ -83,7 +90,8 @@ def test_event_api_exposes_query_execution_trace():
     assert names[-1] == "RUN_STATUS_CHANGED"
     node_events = [item for item in events["events"] if item["event"] == "NODE_EXECUTED"]
     assert {item["node_name"] for item in node_events} == {
-        "router", "entity_resolution", "industry_agent", "merge", "validator", "answer"
+        "conversation_memory_recall", "router", "entity_resolution", "industry_agent",
+        "merge", "validator", "answer", "conversation_memory_writeback"
     }
     assert all("node_input" in item and "node_output" in item for item in node_events)
 

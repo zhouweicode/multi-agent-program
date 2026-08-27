@@ -5,6 +5,14 @@ from typing import Any, TypedDict
 class GraphRAGState(TypedDict, total=False):
     thread_id: str
     question: str
+    original_question: str
+    contextualized_question: str
+    conversation_id: str
+    memory_enabled: bool
+    memory_status: str
+    memory_reference_resolution: dict[str, dict[str, str]]
+    conversation_entities: list[dict[str, Any]]
+    conversation_turn_count: int
     web_search_enabled: bool
     intent: str
     complexity: str

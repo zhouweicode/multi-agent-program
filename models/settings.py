@@ -64,6 +64,7 @@ class Settings:
     web_search_timeout: float = 15
     web_search_max_results: int = 5
     observability_db_path: str = ".runtime/observability.sqlite"
+    conversation_memory_db_path: str = ".runtime/conversation-memory.sqlite"
     workflow_version: str = "stage10.1"
     prompt_version: str = "prompt-v1"
     model_input_cost_per_million: float = 0
@@ -126,6 +127,7 @@ class Settings:
                    web_search_timeout=float(os.getenv("WEB_SEARCH_TIMEOUT", "15")),
                    web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
                    observability_db_path=os.getenv("OBSERVABILITY_DB_PATH", ".runtime/observability.sqlite"),
+                   conversation_memory_db_path=os.getenv("CONVERSATION_MEMORY_DB_PATH", ".runtime/conversation-memory.sqlite"),
                    workflow_version=os.getenv("WORKFLOW_VERSION", "stage10.1"),
                    prompt_version=os.getenv("PROMPT_VERSION", "prompt-v1"),
                    model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),
