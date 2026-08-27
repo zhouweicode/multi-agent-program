@@ -1,5 +1,6 @@
-"""条件路由函数。第一阶段仅开放 talent/achievement 两个领域。"""
+"""LangGraph 条件路由与依赖感知任务调度。"""
 from graph.state import GraphRAGState
+from services.observability import emit_event
 
 
 def after_resolution(state: GraphRAGState) -> str:
@@ -7,8 +8,46 @@ def after_resolution(state: GraphRAGState) -> str:
 
 
 def planned_agents(state: GraphRAGState) -> list[str]:
-    """按 Supervisor 的结构化任务动态 fan-out。"""
+    """兼容旧调用：返回计划内全部 Agent。"""
     return [task["agent"] for task in state.get("tasks", [])]
+
+
+def task_completion_key(task_id: str, generation: int) -> str:
+    return f"{generation}:{task_id}"
+
+
+def scheduled_agents(state: GraphRAGState) -> str | list[str]:
+    """按依赖关系分波调度；sequential 每波一个任务，parallel 执行全部 ready 任务。"""
+    tasks = state.get("tasks", [])
+    if not tasks:
+        return "merge"
+    generation = state.get("replan_count", 0)
+    completed = set(state.get("task_completions", []))
+    task_ids = {task["task_id"] for task in tasks}
+    for task in tasks:
+        unknown = set(task.get("depends_on", [])) - task_ids
+        if unknown:
+            raise ValueError(f"任务 {task['task_id']} 依赖不存在的任务: {', '.join(sorted(unknown))}")
+    pending = [task for task in tasks
+               if task_completion_key(task["task_id"], generation) not in completed]
+    if not pending:
+        emit_event("TASK_SCHEDULING_COMPLETED", thread_id=state.get("thread_id"),
+                   execution_mode=state.get("plan", {}).get("execution_mode", "parallel"),
+                   task_count=len(tasks), generation=generation)
+        return "merge"
+    ready = [task for task in pending if all(
+        task_completion_key(dependency, generation) in completed
+        for dependency in task.get("depends_on", [])
+    )]
+    if not ready:
+        raise ValueError("任务依赖图存在环，或依赖任务未产生完成信号")
+    mode = state.get("plan", {}).get("execution_mode", "parallel")
+    selected = ready[:1] if mode == "sequential" else ready
+    agents = [task["agent"] for task in selected]
+    emit_event("TASKS_DISPATCHED", thread_id=state.get("thread_id"), execution_mode=mode,
+               generation=generation, task_ids=[task["task_id"] for task in selected], agents=agents,
+               pending_count=len(pending))
+    return agents
 
 
 def after_rule_validation(state: GraphRAGState) -> str:

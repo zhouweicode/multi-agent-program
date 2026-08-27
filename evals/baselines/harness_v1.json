@@ -1,0 +1,6 @@
+{
+  "name": "harness-v1-baseline",
+  "dataset": "evals/harness_fault_cases.json",
+  "expected_case_count": 6,
+  "minimum_case_pass_rate": 1.0
+}

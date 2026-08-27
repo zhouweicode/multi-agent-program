@@ -1,5 +1,6 @@
 """全图共享状态。Node 只读写自己需要的字段。"""
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 
 class GraphRAGState(TypedDict, total=False):
@@ -37,6 +38,7 @@ class GraphRAGState(TypedDict, total=False):
     unresolved_mentions: list[str]
     plan: dict[str, Any]
     tasks: list[dict[str, Any]]
+    task_completions: Annotated[list[str], operator.add]
     task_history: list[dict[str, Any]]
     talent_result: dict[str, Any]
     achievement_result: dict[str, Any]

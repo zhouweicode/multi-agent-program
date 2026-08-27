@@ -19,14 +19,18 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt ruff
       - run: ruff check . --select E9,F63,F7,F82
-      - run: python -m compileall -q agents app formatters graph models nodes repositories services tools scripts
+      - run: python -m compileall -q agents app evaluation formatters graph models nodes repositories services tools scripts
       - run: node --check frontend/app.js
       - run: pytest -q
       - run: python -m scripts.evaluate_stage9_e2e
       - name: Agent golden-set regression gate
         run: python -m scripts.run_agent_evals --check --output .runtime/eval-report.json
+      - name: Harness fault-injection regression gate
+        run: python -m scripts.run_harness_evals --check --output .runtime/harness-eval-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: agent-eval-report
-          path: .runtime/eval-report.json
+          path: |
+            .runtime/eval-report.json
+            .runtime/harness-eval-report.json

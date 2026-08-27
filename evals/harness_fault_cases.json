@@ -1,0 +1,37 @@
+[
+  {
+    "case_id": "harness-001",
+    "scenario": "middleware_chain",
+    "expected": {"passed": true}
+  },
+  {
+    "case_id": "harness-002",
+    "scenario": "repeated_loop",
+    "config": {"max_steps": 8, "max_tool_calls": 8, "loop_repeat_threshold": 3, "tool_max_retries": 0},
+    "expected": {"stop_reason": "AGENT_LOOP_DETECTED", "successful_executions": 2}
+  },
+  {
+    "case_id": "harness-003",
+    "scenario": "transient_error",
+    "config": {"tool_timeout_seconds": 1, "tool_max_retries": 1},
+    "expected": {"success": true, "attempts": 2}
+  },
+  {
+    "case_id": "harness-004",
+    "scenario": "timeout",
+    "config": {"tool_timeout_seconds": 0.005, "tool_max_retries": 1},
+    "expected": {"error_category": "TIMEOUT", "attempts": 2}
+  },
+  {
+    "case_id": "harness-005",
+    "scenario": "observation_compression",
+    "config": {"observation_max_chars": 300, "observation_max_items": 3, "tool_max_retries": 0},
+    "expected": {"raw_count": 100, "compressed": true}
+  },
+  {
+    "case_id": "harness-006",
+    "scenario": "token_budget",
+    "config": {"max_tokens": 10},
+    "expected": {"stop_reason": "AGENT_BUDGET_EXCEEDED", "total_tokens": 13}
+  }
+]

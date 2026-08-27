@@ -1,4 +1,4 @@
-# 亿级科技知识图谱 Multi-Agent GraphRAG（第九阶段）
+# 亿级科技知识图谱 Multi-Agent GraphRAG
 
 这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。第九阶段新增统一 EvidenceRecord、Neo4j 企业/产业 Repository、共享数据库 Client、真实依赖健康探针、MySQL→Neo4j 同步工具和端到端质量评测。
 
@@ -8,13 +8,13 @@
 
 - Router、Entity Resolution、Supervisor、Merge、Rule Validator、Answer 都是 LangGraph Node，不是 Agent。
 - 已实现 TalentOrganizationAgent、ResearchAchievementAgent、EnterpriseRelationAgent、IndustryChainAgent、GraphReasoningAgent 和 WebResearchAgent 六个领域 Agent。
-- 每个 Agent 使用局部 `SystemMessage → AIMessage.tool_calls → ToolMessage → Model` 循环，并通过工具白名单阻止跨领域调用。
-- `ModelFactory` 根据 `MODEL_PROVIDER` 返回离线 Mock 或真实 OpenAI-Compatible ChatModel，业务代码不绑定具体模型 SDK。
+- Domain Agent 与 VerificationAgent 复用同一个 `AgentHarness`：统一执行 Tool Calling、Middleware、循环检测、错误分类、超时重试和 Observation 压缩，并通过工具白名单阻止跨领域调用。
+- `ModelFactory` 支持全局及每 Agent 的 OpenAI-Compatible 模型配置，业务代码不绑定具体模型 SDK。
 - Entity Resolution 使用 LangGraph `interrupt()` 暂停，使用同一 `thread_id` 和 `Command(resume=...)` 恢复。
-- Supervisor 根据复杂 Query 生成结构化 `tasks`；LangGraph 按任务列表动态 fan-out，并行运行相关领域 Agent 后在 Merge 汇合。
+- Supervisor 根据复杂 Query 生成结构化 `tasks`；调度器按 `execution_mode` 和 `depends_on` 执行 sequential 或依赖就绪的 parallel 波次，全部完成后再 Merge。
 - 每个复杂任务携带 `required_fact_types` 与 `required_entity_ids`；Rule Validator 按任务契约验收。
 - Validation 分为两层：Rule Validator 负责确定性校验；VerificationAgent 仅在 `requires_verification=true` 的复杂语义判断中执行。
-- VerificationAgent 使用局部 `SystemMessage/HumanMessage/AIMessage/ToolMessage` 实现真正的多轮 Tool Calling Loop，完整 Messages 不写入全局 State。
+- Harness 的局部 Messages 不写入全局 State；完整 Tool Observation 留给事实与证据，压缩副本只回送模型，避免上下文膨胀。
 - Supervisor 重规划时读取 `missing_domains`、`missing_evidence` 和 `task_history`，只补调缺失领域，并受 `max_replans` 限制。
 - FastAPI 使用后台 Run 执行 LangGraph，`POST /queries` 立即返回 `RUNNING`，前端通过 SSE 接收轨迹和终态。
 - `run_id` 与一次执行绑定并禁止复用，避免旧 Checkpoint State 污染新问题。
@@ -242,6 +242,28 @@ export MODEL_API_KEY=your-api-key
 export MODEL_BASE_URL=https://open.bigmodel.cn/api/paas/v4/
 ```
 
+每个 Agent 可覆盖 provider、模型、地址、温度、超时、重试和价格。例如：
+
+```bash
+export ACHIEVEMENT_AGENT_MODEL_NAME=glm-5.2
+export WEB_RESEARCH_AGENT_MODEL_NAME=glm-5.2
+export VERIFICATION_AGENT_MODEL_TEMPERATURE=0
+```
+
+Harness 运行预算同样支持全局与每 Agent 两级配置：
+
+```bash
+export AGENT_MAX_DURATION_SECONDS=120
+export AGENT_MAX_TOKENS=64000
+export AGENT_MAX_COST=2
+export AGENT_TOOL_TIMEOUT_SECONDS=30
+export AGENT_TOOL_MAX_RETRIES=1
+export AGENT_OBSERVATION_MAX_CHARS=8000
+export ACHIEVEMENT_AGENT_MAX_TOKENS=32000
+```
+
+`AGENT_MAX_TOKENS=0` 或 `AGENT_MAX_COST=0` 表示不限制。SSE 会推送模型开始/结束、工具重试/超时、Observation 压缩、循环终止和预算更新等细粒度事件。
+
 需要强制离线时使用 `MODEL_PROVIDER=mock`。密钥只通过环境变量注入，禁止写入源码、README 或提交到 Git。
 
 完整模板见 `.env.example`。项目会从根目录自动读取 `.env`，且系统环境变量优先级更高；`.env` 已被 Git 忽略，不会提交。
@@ -333,7 +355,7 @@ flowchart LR
     LLM -->|max_steps| ERR[Controlled Error]
 ```
 
-Supervisor 只为 Query 涉及的领域创建任务。例如“综合分析学术、职业、企业、产业链和间接关系路径”会并行调用全部五个领域 Agent；简单企业或产业链问题会跳过 Supervisor，直接进入相应 Agent。
+Supervisor 只为 Query 涉及的领域创建任务。例如“综合分析学术、职业、企业、产业链和间接关系路径”可并行调用五个领域 Agent；当计划为 `sequential` 时逐个执行，`parallel` 计划也会等待 `depends_on` 完成后再启动下游任务。简单企业或产业链问题会跳过 Supervisor，直接进入相应 Agent。
 
 语义判断场景“判断张伟和李明是不是长期稳定的核心科研合作伙伴”执行：
 
@@ -369,6 +391,9 @@ Rule Validator 使用普通 Python 校验 entity_id、共同作者/项目参与�
 - Supervisor 只补调缺失领域的最小化 Replan；
 - FastAPI 创建、interrupt、resume、State 和 history；
 - SQLite Checkpointer 的跨请求会话持久化。
+- Harness Middleware 顺序、循环检测、Token 预算、Observation 压缩；
+- Tool 瞬态错误重试、超时和错误分类注入；
+- sequential、parallel 依赖波次、未知依赖与依赖环调度；
 - 后台 Run 状态、SSE 终态和重复 `run_id` 拒绝；
 - Supervisor 任务契约与 Rule Validator 验收；
 - Verification 经 Service/Repository 使用当前数据后端；
@@ -389,6 +414,7 @@ Rule Validator 使用普通 Python 校验 entity_id、共同作者/项目参与�
 pytest -q
 python -m scripts.evaluate_stage9_e2e
 python -m scripts.run_agent_evals --check
+python -m scripts.run_harness_evals --check
 ```
 
 当前测试结果以本机 `pytest -q` 输出为准；真实数据库集成采用单独 smoke test，不进入默认 CI。
@@ -411,6 +437,7 @@ Mock 模型没有真实 Token，成本固定为 0。浏览器页面底部可以�
 
 `evals/golden_v1.jsonl` 固定包含 10 条实体消歧、20 条路由、20 条完整工作流用例。
 CI 使用 `evals/baselines/agentops_v1.json` 同时执行绝对门槛与相对回退检测，失败时阻止合并，并上传评测报告。
+`evals/harness_fault_cases.json` 独立评测 Harness Middleware、重复循环、瞬态故障恢复、超时分类、Observation 压缩和 Token 预算，避免改变业务黄金集的固定规模。
 详细设计见 [docs/07_agent_evaluation_observability.md](docs/07_agent_evaluation_observability.md)。
 
 ## 后续阶段建议

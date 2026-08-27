@@ -25,6 +25,7 @@ class PlannedTask(BaseModel):
     goal: str
     required_fact_types: list[str] = Field(default_factory=list, description="完成任务必须返回的业务事实类型")
     required_entity_ids: list[str] = Field(default_factory=list, description="任务涉及的规范实体 ID")
+    depends_on: list[str] = Field(default_factory=list, description="必须先完成的任务 ID")
 
 
 class SupervisorPlan(BaseModel):
@@ -46,6 +47,8 @@ class DomainResult(BaseModel):
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     tool_calls: list[ToolCallSpec] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    stop_reason: str = "completed"
 
 
 class EvidenceRecord(BaseModel):

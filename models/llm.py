@@ -159,35 +159,40 @@ class MockVerificationModel:
 class ModelFactory:
     """统一模型工厂；默认 Mock，MODEL_PROVIDER=openai 时启用真实模型。"""
     @staticmethod
-    def _chat_model() -> Any:
+    def _chat_model(agent_name: str | None = None) -> Any:
         settings = Settings.from_env()
-        if settings.model_provider != "openai":
-            raise ValueError(f"不支持的 MODEL_PROVIDER: {settings.model_provider}")
-        if not settings.model_api_key:
+        config = settings.model_config(agent_name)
+        if config.provider != "openai":
+            raise ValueError(f"不支持的 MODEL_PROVIDER: {config.provider}")
+        if not config.api_key:
             raise ValueError("MODEL_PROVIDER=openai 时必须设置 MODEL_API_KEY 或 OPENAI_API_KEY")
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=settings.model_name, api_key=settings.model_api_key,
-                          base_url=settings.model_base_url, temperature=settings.model_temperature,
-                          timeout=settings.model_request_timeout, max_retries=settings.model_max_retries,
+        return ChatOpenAI(model=config.name, api_key=config.api_key,
+                          base_url=config.base_url, temperature=config.temperature,
+                          timeout=config.request_timeout, max_retries=config.max_retries,
                           callbacks=[telemetry_callback])
 
     @staticmethod
-    def structured_model() -> Any:
-        if Settings.from_env().model_provider == "mock":
+    def structured_model(role: str | None = None) -> Any:
+        if role is None:
+            return RoleAwareStructuredModel()
+        agent_name = f"{role}_agent" if role and not role.endswith("_agent") else role
+        if Settings.from_env().model_config(agent_name).provider == "mock":
             return MockStructuredModel()
-        return OpenAIStructuredModel(ModelFactory._chat_model())
+        return OpenAIStructuredModel(ModelFactory._chat_model(agent_name))
 
     @staticmethod
     def tool_calling_model(domain: str) -> Any:
-        if Settings.from_env().model_provider == "mock":
+        agent_name = f"{domain}_agent"
+        if Settings.from_env().model_config(agent_name).provider == "mock":
             return MockToolCallingModel(domain)
-        return ModelFactory._chat_model()
+        return ModelFactory._chat_model(agent_name)
 
     @staticmethod
     def verification_model() -> Any:
-        if Settings.from_env().model_provider == "mock":
+        if Settings.from_env().model_config("verification_agent").provider == "mock":
             return MockVerificationModel()
-        return ModelFactory._chat_model()
+        return ModelFactory._chat_model("verification_agent")
 
 
 class OpenAIStructuredModel:
@@ -239,6 +244,28 @@ class OpenAIStructuredModel:
 只有明确要求联网、最新公开资料、官网、新闻或外部查证时才调用 web_research_agent。
 “综合分析两人的学术、职业和产业合作关系”应并行调用 talent_agent、achievement_agent、enterprise_agent，
 不能因为出现“关系”二字就调用 graph_reasoning_agent。required_fact_types 表示任务必须返回的业务事实类型，
-required_entity_ids 必须填写本次输入中的 canonical entity ID；Node 会用确定性领域契约再次规范化。""",
+required_entity_ids 必须填写本次输入中的 canonical entity ID；Node 会用确定性领域契约再次规范化。
+execution_mode=sequential 时任务严格逐个执行；parallel 时无依赖任务可并发。depends_on 只能引用本计划中的 task_id，
+有前置数据依赖时必须填写；没有依赖时返回空数组。""",
             context,
+        )
+
+
+class RoleAwareStructuredModel:
+    """保持 `structured_model()` 旧接口，同时让 Router/Supervisor 使用各自模型配置。"""
+
+    @staticmethod
+    def _role_model(role: str) -> Any:
+        agent_name = f"{role}_agent"
+        if Settings.from_env().model_config(agent_name).provider == "mock":
+            return MockStructuredModel()
+        return OpenAIStructuredModel(ModelFactory._chat_model(agent_name))
+
+    def invoke_router(self, question: str) -> RouterOutput:
+        return self._role_model("router").invoke_router(question)
+
+    def invoke_supervisor(self, question: str, resolved_entities: dict[str, str], validation_result: dict | None = None,
+                          verification_result: dict | None = None, task_history: list[dict] | None = None) -> SupervisorPlan:
+        return self._role_model("supervisor").invoke_supervisor(
+            question, resolved_entities, validation_result, verification_result, task_history,
         )

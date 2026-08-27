@@ -39,13 +39,14 @@ def _guard_complex_plan(question: str, plan, is_replan: bool, web_search_enabled
         required.append("web_research_agent")
     if not required:
         return plan
-    tasks = [PlannedTask(task_id=f"task_{agent.removesuffix('_agent')}", agent=agent,
-                         goal=DOMAIN_TASKS[agent],
-                         required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
-                         required_entity_ids=[])
-             for agent in dict.fromkeys(required)]
-    return plan.model_copy(update={"tasks": tasks, "execution_mode": "parallel",
-                                   "reason": "根据问题中的明确领域信号校正任务边界并并行执行"})
+    planned_by_agent = {task.agent: task for task in plan.tasks}
+    tasks = [planned_by_agent.get(agent) or PlannedTask(
+        task_id=f"task_{agent.removesuffix('_agent')}", agent=agent,
+        goal=DOMAIN_TASKS[agent], required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
+        required_entity_ids=[])
+        for agent in dict.fromkeys(required)]
+    return plan.model_copy(update={"tasks": tasks,
+                                   "reason": "根据问题中的明确领域信号校正任务边界并执行"})
 
 
 def supervisor_node(state: GraphRAGState) -> dict:
@@ -68,6 +69,12 @@ def supervisor_node(state: GraphRAGState) -> dict:
             "required_fact_types": required_fact_types(task.agent, state["question"]),
             "required_entity_ids": entity_ids,
         }))
+    task_ids = [task.task_id for task in normalized_tasks]
+    agents = [task.agent for task in normalized_tasks]
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("Supervisor 计划包含重复 task_id")
+    if len(agents) != len(set(agents)):
+        raise ValueError("同一调度波次不支持给同一个 Agent 分配多个任务")
     plan = plan.model_copy(update={"tasks": normalized_tasks})
     logger.info("Supervisor: mode=%s tasks=%s", plan.execution_mode, [x.agent for x in plan.tasks])
     emit_event("SUPERVISOR_PLANNED", thread_id=state.get("thread_id"), execution_mode=plan.execution_mode, agents=[x.agent for x in plan.tasks],

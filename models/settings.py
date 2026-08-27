@@ -12,6 +12,22 @@ load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 
 @dataclass(frozen=True)
+class AgentModelConfig:
+    """单个 Agent/Node 最终生效的模型配置。"""
+
+    provider: str
+    name: str
+    api_key: str | None
+    base_url: str | None
+    temperature: float
+    request_timeout: float
+    max_retries: int
+    input_cost_per_million: float
+    output_cost_per_million: float
+    cost_currency: str
+
+
+@dataclass(frozen=True)
 class Settings:
     model_provider: str = "mock"
     model_name: str = "glm-5.2"
@@ -72,11 +88,39 @@ class Settings:
     query_experience_min_samples: int = 5
     query_experience_min_similarity: float = 0.72
     query_experience_min_confidence: float = 0.75
-    workflow_version: str = "stage10.1"
+    workflow_version: str = "stage11"
     prompt_version: str = "prompt-v1"
     model_input_cost_per_million: float = 0
     model_output_cost_per_million: float = 0
     model_cost_currency: str = "USD"
+
+    def model_config(self, agent_name: str | None = None) -> AgentModelConfig:
+        """解析每 Agent 模型配置；未配置的字段回退到全局 MODEL_*。
+
+        例如 `ACHIEVEMENT_AGENT_MODEL_NAME`、`VERIFICATION_AGENT_MODEL_PROVIDER`。
+        """
+        prefix = ("".join(character if character.isalnum() else "_"
+                          for character in agent_name.upper()) + "_") if agent_name else ""
+
+        def env(name: str, default):
+            return os.getenv(f"{prefix}MODEL_{name}", default) if prefix else default
+
+        provider = str(env("PROVIDER", self.model_provider)).lower()
+        api_key = env("API_KEY", self.model_api_key)
+        if provider == "auto":
+            provider = "openai" if api_key else "mock"
+        return AgentModelConfig(
+            provider=provider,
+            name=str(env("NAME", self.model_name)),
+            api_key=api_key,
+            base_url=env("BASE_URL", self.model_base_url),
+            temperature=float(env("TEMPERATURE", self.model_temperature)),
+            request_timeout=float(env("REQUEST_TIMEOUT", self.model_request_timeout)),
+            max_retries=int(env("MAX_RETRIES", self.model_max_retries)),
+            input_cost_per_million=float(env("INPUT_COST_PER_MILLION", self.model_input_cost_per_million)),
+            output_cost_per_million=float(env("OUTPUT_COST_PER_MILLION", self.model_output_cost_per_million)),
+            cost_currency=str(env("COST_CURRENCY", self.model_cost_currency)),
+        )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -142,7 +186,7 @@ class Settings:
                    query_experience_min_samples=int(os.getenv("QUERY_EXPERIENCE_MIN_SAMPLES", "5")),
                    query_experience_min_similarity=float(os.getenv("QUERY_EXPERIENCE_MIN_SIMILARITY", "0.72")),
                    query_experience_min_confidence=float(os.getenv("QUERY_EXPERIENCE_MIN_CONFIDENCE", "0.75")),
-                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage10.1"),
+                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage11"),
                    prompt_version=os.getenv("PROMPT_VERSION", "prompt-v1"),
                    model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),
                    model_output_cost_per_million=float(os.getenv("MODEL_OUTPUT_COST_PER_MILLION", "0")),

@@ -1,6 +1,6 @@
 """将 Verification Agent 接入 LangGraph 的薄 Node。"""
-from graph.state import GraphRAGState
 from agents.verification_agent import build_verification_agent
+from graph.state import GraphRAGState
 from services.observability import emit_event
 
 
@@ -12,6 +12,7 @@ def verification_agent_node(state: GraphRAGState) -> dict:
         question=state["question"],
         entity_ids=list(state.get("resolved_entities", {}).values()),
         evidence_ids=evidence_ids,
+        thread_id=state.get("thread_id"),
     )
     history = list(state.get("task_history", []))
     history.append({"agent": "verification_agent", "status": result["status"]})
