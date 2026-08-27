@@ -15,8 +15,19 @@ logger = logging.getLogger(__name__)
 
 
 def validator_node(state: GraphRAGState) -> dict:
-    errors, missing = [], []
+    errors, missing, warnings = [], [], []
     entity_ids = set(state.get("resolved_entities", {}).values())
+    skill_id = state.get("requested_skill")
+    skill_required_domains = set(state.get("skill_required_domains", []))
+
+    def add_domain_error(domain: str, message: str) -> None:
+        if skill_id and domain not in skill_required_domains:
+            warnings.append(f"可选领域 {domain}：{message}")
+        else:
+            errors.append(message)
+
+    if skill_id and len(entity_ids) != 1:
+        errors.append("专家报告 Skill 只支持一个已完成消歧的专家实体")
     entity_service, evidence_service = get_entity_service(), get_evidence_service()
     for entity_id in entity_ids:
         if not entity_service.exists(entity_id):
@@ -28,9 +39,13 @@ def validator_node(state: GraphRAGState) -> dict:
                       ("graph", state.get("graph_result")), ("web", state.get("web_result")))
     for domain, result in domain_results:
         if result is None and domain in expected_domains:
-            missing.append(domain)
+            if skill_id and domain not in skill_required_domains:
+                warnings.append(f"可选领域 {domain} 未返回结果，报告将降级生成")
+            else:
+                missing.append(domain)
         elif result and result.get("errors"):
-            errors.extend(result["errors"])
+            for item in result["errors"]:
+                add_domain_error(domain, item)
     results_by_agent = {result["agent"]: result for _, result in domain_results if result}
     for task in state.get("tasks", []):
         result = results_by_agent.get(task["agent"])
@@ -45,9 +60,13 @@ def validator_node(state: GraphRAGState) -> dict:
             errors.append(f"任务实体契约不一致: {task['task_id']}")
         if missing_facts:
             domain = AGENT_DOMAINS[task["agent"]]
-            errors.append(f"任务验收失败 {task.get('task_id', task['agent'])}：缺少事实类型 {', '.join(missing_facts)}")
-            if domain not in missing:
-                missing.append(domain)
+            message = f"任务验收失败 {task.get('task_id', task['agent'])}：缺少事实类型 {', '.join(missing_facts)}"
+            if skill_id and domain not in skill_required_domains:
+                warnings.append(f"可选领域 {domain}：{message}")
+            else:
+                errors.append(message)
+                if domain not in missing:
+                    missing.append(domain)
     for item in state.get("evidence", []):
         # 新版证据携带原始事实快照，可在不重复访问数据库的情况下做确定性校验。
         complete = all(item.get(key) not in (None, "") for key in
@@ -105,7 +124,7 @@ def validator_node(state: GraphRAGState) -> dict:
         if fact["tool"] == "find_path" and fact["data"].get("found"):
             path = fact["data"]
             if path["hop_count"] != len(path["edges"]) or len(path["nodes"]) != path["hop_count"] + 1:
-                errors.append("图路径 hop_count 与节点/边数量不一致")
+                add_domain_error("graph", "图路径 hop_count 与节点/边数量不一致")
     industry_result = state.get("industry_result", {})
     for fact in industry_result.get("facts", []):
         if fact["tool"] == "rank_top_events":
@@ -118,24 +137,24 @@ def validator_node(state: GraphRAGState) -> dict:
             continue
         data = fact.get("data")
         if not isinstance(data, dict):
-            errors.append("联网搜索返回格式无效")
+            add_domain_error("web", "联网搜索返回格式无效")
             continue
         if data.get("error"):
-            errors.append(f"联网搜索失败: {data['error']}")
+            add_domain_error("web", f"联网搜索失败: {data['error']}")
             continue
         rows = data.get("results")
         if data.get("provider") not in {"brave", "tavily"}:
-            errors.append("联网搜索来源提供方无效")
+            add_domain_error("web", "联网搜索来源提供方无效")
         if not isinstance(rows, list) or data.get("result_count") != len(rows):
-            errors.append("联网搜索结果计数与数据不一致")
+            add_domain_error("web", "联网搜索结果计数与数据不一致")
             continue
         for row in rows:
             if not isinstance(row, dict) or not str(row.get("url", "")).startswith("https://"):
-                errors.append("联网证据 URL 无效或不是 HTTPS")
+                add_domain_error("web", "联网证据 URL 无效或不是 HTTPS")
             if not row.get("title") or not row.get("snippet"):
-                errors.append("联网证据缺少标题或摘要")
+                add_domain_error("web", "联网证据缺少标题或摘要")
     if web_result and not any(fact.get("tool") == "search_web" for fact in web_result.get("facts", [])):
-        errors.append("联网研究未返回 search_web 结果")
+        add_domain_error("web", "联网研究未返回 search_web 结果")
     if errors and "web" in expected_domains and "web" not in missing and web_result:
         web_errors = [item for item in errors if "联网" in item]
         if web_errors:
@@ -147,8 +166,8 @@ def validator_node(state: GraphRAGState) -> dict:
     only_policy_blocked = web_blocked_by_request and expected_domains == {"web"}
     result = ValidationResult(valid=not errors and not missing,
                               needs_replan=bool(missing or errors) and not only_policy_blocked,
-                              missing_domains=missing, errors=errors)
+                              missing_domains=missing, errors=errors, warnings=warnings)
     logger.info("Validator: valid=%s errors=%s", result.valid, result.errors)
     emit_event("RULE_VALIDATION_COMPLETED", thread_id=state.get("thread_id"), status="PASS" if result.valid else "FAIL",
-               errors=result.errors, missing_domains=result.missing_domains)
+               errors=result.errors, warnings=result.warnings, missing_domains=result.missing_domains)
     return {"validation_result": result.model_dump()}

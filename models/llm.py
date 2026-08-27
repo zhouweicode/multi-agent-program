@@ -78,7 +78,12 @@ class MockToolCallingModel:
         # 单实体查询使用画像/履历工具；只有双实体关系查询才计算任职重叠。
         if self.domain == "talent":
             if len(entity_ids) == 1:
-                talent_specs = ([('get_education_history', {"entity_id": entity_ids[0]})]
+                talent_specs = ([
+                                    ("get_person_profile", {"entity_id": entity_ids[0]}),
+                                    ("get_education_history", {"entity_id": entity_ids[0]}),
+                                    ("get_employment_history", {"entity_id": entity_ids[0]}),
+                                ] if "专家报告" in goal else
+                                [('get_education_history', {"entity_id": entity_ids[0]})]
                                 if any(word in goal for word in ("教育", "学历", "毕业")) else [
                                     ("get_person_profile", {"entity_id": entity_ids[0]}),
                                     ("get_employment_history", {"entity_id": entity_ids[0]}),
@@ -87,7 +92,12 @@ class MockToolCallingModel:
                 talent_specs = [("match_employment_overlap", {"entity_ids": entity_ids})]
         else:
             talent_specs = []
-        if self.domain == "achievement" and "专利" in goal:
+        if self.domain == "achievement" and "专家报告" in goal and len(entity_ids) == 1:
+            achievement_specs = [
+                ("get_author_papers", {"entity_id": entity_ids[0]}),
+                ("get_person_patents", {"entity_id": entity_ids[0]}),
+            ]
+        elif self.domain == "achievement" and "专利" in goal:
             achievement_specs = ([('get_person_patents', {"entity_id": entity_ids[0]})] if len(entity_ids) == 1 else
                                  [('get_common_patents', {"entity_ids": entity_ids})])
         elif self.domain == "achievement" and len(entity_ids) == 1:

@@ -45,6 +45,49 @@
   word-break: break-word;
 }
 
+.answer-text.expert-report {
+  white-space: normal;
+}
+
+.expert-report h2 {
+  margin: 0 0 4px;
+  color: #e8f8fb;
+}
+
+.expert-report h3 {
+  margin: 22px 0 8px;
+  color: var(--cyan);
+  font-size: 14px;
+}
+
+.expert-report p {
+  margin: 6px 0;
+}
+
+.expert-report ul,
+.expert-report ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.expert-report li {
+  margin: 5px 0;
+}
+
+.expert-report .report-meta {
+  color: var(--muted);
+  font: 10px/1.6 ui-monospace, monospace;
+}
+
+.expert-report .report-status {
+  color: #8fb1bd;
+  font-size: 12px;
+}
+
+.expert-report .report-status.unavailable {
+  color: var(--amber);
+}
+
 .timeline {
   max-width: 100%;
 }

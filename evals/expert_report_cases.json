@@ -1,0 +1,35 @@
+[
+  {
+    "case_id": "expert_report_comprehensive",
+    "scenario": "workflow",
+    "input": {"question": "请生成张伟的完整专家报告", "selections": {"张伟": "person_zw_001"}},
+    "expected": {
+      "agents": ["talent_agent", "achievement_agent", "enterprise_agent", "graph_reasoning_agent"],
+      "sections": ["profile_history", "research_achievements", "enterprise_relations", "cooperation_network"],
+      "evidence_coverage": 1.0,
+      "validation_valid": true
+    }
+  },
+  {
+    "case_id": "expert_report_brief",
+    "scenario": "workflow",
+    "input": {"question": "请生成张伟的简版专家报告", "selections": {"张伟": "person_zw_001"}},
+    "expected": {
+      "agents": ["talent_agent", "achievement_agent"],
+      "sections": ["profile_history", "research_achievements"],
+      "evidence_coverage": 1.0,
+      "validation_valid": true
+    }
+  },
+  {
+    "case_id": "expert_report_optional_timeout",
+    "scenario": "optional_failure",
+    "expected": {"validation_valid": true, "needs_replan": false, "has_warning": true}
+  },
+  {
+    "case_id": "expert_report_input_guard",
+    "scenario": "input_guard",
+    "input": {"question": "生成面向企业的简版专家报告，展示TOP200", "top_n": 200},
+    "expected": {"report_type": "brief", "audience": "enterprise", "top_n": 50}
+  }
+]

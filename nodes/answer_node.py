@@ -18,6 +18,10 @@ def answer_node(state: GraphRAGState) -> dict:
         answer = f"无法形成可靠结论。校验问题：{'；'.join(validation.get('errors', []) + validation.get('missing_domains', []))}"
         emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="FAIL", has_verification=False)
         return {"final_answer": answer}
+    if state.get("requested_skill") == "expert_report" and state.get("report_markdown"):
+        emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="PASS",
+                   has_verification=False, skill_id="expert_report")
+        return {"final_answer": state["report_markdown"]}
 
     formatted = [
         format_talent(state.get("talent_result"), resolved),

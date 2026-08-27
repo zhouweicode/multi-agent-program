@@ -1,5 +1,6 @@
 """Supervisor/Planner Node：只拆解、调度与 replan，不调用业务 Tool。"""
 import logging
+import hashlib
 
 from graph.state import GraphRAGState
 from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
@@ -7,6 +8,9 @@ from models.llm import ModelFactory
 from models.schemas import PlannedTask
 from services.observability import emit_event
 from services.telemetry import traced_span
+from skills.expert_report.spec import selected_capabilities
+from skills.planning import CAPABILITY_BINDINGS, build_skill_plan
+from skills.registry import skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -53,20 +57,38 @@ def supervisor_node(state: GraphRAGState) -> dict:
     if state.get("replan_count", 0) >= state.get("max_replans", 2):
         logger.warning("Supervisor: 已达到 max_replans")
         return {"tasks": [], "plan": {"reason": "达到最大重规划次数"}}
-    replan_context = bool(state.get("validation_result") or state.get("verification_result"))
-    with traced_span("supervisor.model.invoke", "model_operation", {
-        "model.operation": "plan", "workflow.replan": replan_context,
-    }):
-        plan = ModelFactory.structured_model().invoke_supervisor(
-            state["question"], state["resolved_entities"], state.get("validation_result"),
-            state.get("verification_result"), state.get("task_history", []))
     is_replan = bool(state.get("validation_result") or state.get("verification_result"))
-    plan = _guard_complex_plan(state["question"], plan, is_replan, state.get("web_search_enabled", True))
     entity_ids = list(state.get("resolved_entities", {}).values())
+    skill_id = state.get("requested_skill")
+    skill_update = {}
+    if skill_id:
+        spec = skill_registry.get(skill_id)
+        instructions = spec.load_instructions()
+        capabilities = selected_capabilities(state.get("skill_input", {}), state.get("web_search_enabled", True))
+        plan = build_skill_plan(skill_id, capabilities, entity_ids, is_replan=is_replan)
+        required_domains = list(dict.fromkeys(
+            CAPABILITY_BINDINGS[item].domain for item in spec.required_capabilities
+        ))
+        skill_update = {
+            "skill_capabilities": capabilities,
+            "skill_required_domains": required_domains,
+            "skill_instruction_digest": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
+        }
+        emit_event("SKILL_PLAN_CREATED", thread_id=state.get("thread_id"), skill_id=skill_id,
+                   capabilities=capabilities, required_domains=required_domains)
+    else:
+        with traced_span("supervisor.model.invoke", "model_operation", {
+            "model.operation": "plan", "workflow.replan": is_replan,
+        }):
+            plan = ModelFactory.structured_model().invoke_supervisor(
+                state["question"], state["resolved_entities"], state.get("validation_result"),
+                state.get("verification_result"), state.get("task_history", []))
+        plan = _guard_complex_plan(state["question"], plan, is_replan, state.get("web_search_enabled", True))
     normalized_tasks = []
     for task in plan.tasks:
         normalized_tasks.append(task.model_copy(update={
-            "required_fact_types": required_fact_types(task.agent, state["question"]),
+            "required_fact_types": (task.required_fact_types if skill_id else
+                                    required_fact_types(task.agent, state["question"])),
             "required_entity_ids": entity_ids,
         }))
     task_ids = [task.task_id for task in normalized_tasks]
@@ -80,4 +102,4 @@ def supervisor_node(state: GraphRAGState) -> dict:
     emit_event("SUPERVISOR_PLANNED", thread_id=state.get("thread_id"), execution_mode=plan.execution_mode, agents=[x.agent for x in plan.tasks],
                replan_count=state.get("replan_count", 0), reason=plan.reason)
     return {"plan": plan.model_dump(), "tasks": [x.model_dump() for x in plan.tasks],
-            "replan_count": state.get("replan_count", 0) + (1 if is_replan else 0)}
+            "replan_count": state.get("replan_count", 0) + (1 if is_replan else 0)} | skill_update

@@ -25,6 +25,12 @@ class GraphRAGState(TypedDict, total=False):
     experience_route_agreement: bool
     experience_pattern: dict[str, Any]
     web_search_enabled: bool
+    requested_skill: str
+    skill_version: str
+    skill_input: dict[str, Any]
+    skill_capabilities: list[str]
+    skill_required_domains: list[str]
+    skill_instruction_digest: str
     intent: str
     complexity: str
     primary_domain: str
@@ -49,6 +55,8 @@ class GraphRAGState(TypedDict, total=False):
     evidence: list[dict[str, Any]]
     validation_result: dict[str, Any]
     verification_result: dict[str, Any]
+    report_draft: dict[str, Any]
+    report_markdown: str
     replan_count: int
     max_replans: int
     final_answer: str

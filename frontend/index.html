@@ -21,7 +21,7 @@
 
   <main class="shell">
     <section class="hero">
-      <div class="eyebrow">STAGE 9 · REAL DATA + UNIFIED EVIDENCE + EVALUATION</div>
+      <div class="eyebrow">STAGE 12 · HARNESS + RUNTIME SKILLS + EVIDENCE REPORT</div>
       <h1>让每一次推理<br><span>清晰可见</span></h1>
       <p>输入科技知识图谱问题，实时观察 Router、实体消歧、Supervisor、领域 Agent、Tool Calling 与验证链路。</p>
     </section>
@@ -37,6 +37,7 @@
           <div class="examples">
             <span>试试：</span>
             <button type="button" data-example="深圳科技大学003的高芳发表过哪些论文？">论文成果</button>
+            <button type="button" data-example="请生成深圳科技大学003的高芳的完整专家报告。">专家报告</button>
             <button type="button" data-example="深圳科技大学003的高芳有哪些专利？">专利成果</button>
             <button type="button" data-example="综合分析深圳科技大学003的高芳的教育经历、职业履历、论文、项目、专利和企业任职，形成跨领域专家画像。">跨域画像</button>
             <button type="button" data-example="对比深圳科技大学003的高芳和上海科技大学002的赵强在论文、科研项目、专利及企业任职方面的成果与差异。">成果对比</button>
@@ -103,9 +104,11 @@
             <span class="connector">→</span>
             <div class="flow-node" data-node="validator"><i>08</i><strong>Validator</strong><small>确定性规则校验</small></div>
             <span class="connector">→</span>
-            <div class="flow-node optional" data-node="verification"><i>09</i><strong>Verification</strong><small>复杂语义判断</small></div>
+            <div class="flow-node optional" data-node="skill"><i>09</i><strong>Skill Composer</strong><small>证据化专家报告</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="answer"><i>10</i><strong>Answer</strong><small>生成可信答案</small></div>
+            <div class="flow-node optional" data-node="verification"><i>10</i><strong>Verification</strong><small>复杂语义判断</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="answer"><i>11</i><strong>Answer</strong><small>生成可信答案</small></div>
           </div>
       </section>
 

@@ -23,6 +23,7 @@ from nodes.conversation_memory_node import (
     conversation_memory_writeback_node,
 )
 from nodes.entity_resolution_node import entity_resolution_node
+from nodes.expert_report_node import expert_report_node
 from nodes.merge_node import merge_node
 from nodes.query_experience_node import (
     query_experience_recall_node,
@@ -52,6 +53,7 @@ def build_graph(checkpointer=None):
     graph.add_node("web_research_agent", traced_node("web_research_agent", web_research_agent_node))
     graph.add_node("merge", traced_node("merge", merge_node))
     graph.add_node("validator", traced_node("validator", validator_node))
+    graph.add_node("expert_report", traced_node("expert_report", expert_report_node))
     graph.add_node("answer", traced_node("answer", answer_node))
     graph.add_node("conversation_memory_writeback", traced_node("conversation_memory_writeback", conversation_memory_writeback_node))
     graph.add_node("query_experience_writeback", traced_node("query_experience_writeback", query_experience_writeback_node))
@@ -76,7 +78,9 @@ def build_graph(checkpointer=None):
     graph.add_edge("web_research_agent", "task_scheduler")
     graph.add_edge("merge", "validator")
     graph.add_conditional_edges("validator", after_rule_validation,
-                                {"supervisor": "supervisor", "verification_agent": "verification_agent", "answer": "answer"})
+                                {"supervisor": "supervisor", "verification_agent": "verification_agent",
+                                 "expert_report": "expert_report", "answer": "answer"})
+    graph.add_edge("expert_report", "answer")
     graph.add_conditional_edges("verification_agent", after_verification,
                                 {"supervisor": "supervisor", "answer": "answer"})
     graph.add_edge("answer", "conversation_memory_writeback")

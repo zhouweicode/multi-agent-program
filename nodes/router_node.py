@@ -7,6 +7,8 @@ from models.llm import ModelFactory
 from services.observability import emit_event
 from services.resources import get_entity_service
 from services.telemetry import traced_span
+from skills.expert_report.spec import normalize_expert_report_input
+from skills.registry import skill_registry
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +98,18 @@ def router_node(state: GraphRAGState) -> dict:
     output = _apply_domain_guardrail(state["question"], output)
     output = _apply_web_search_policy(state["question"], output, state.get("web_search_enabled", True))
     output = _apply_verification_guardrail(state["question"], output)
+    skill = (skill_registry.get(state["requested_skill"])
+             if state.get("requested_skill") else skill_registry.detect(state["question"]))
+    skill_update = {}
+    if skill:
+        # Skill 查询统一进入 Supervisor；Skill 只声明能力，不能绕过 Planner 直达 Agent。
+        output = output.model_copy(update={"complexity": "complex", "primary_domain": "talent",
+                                           "requires_verification": False})
+        skill_input = normalize_expert_report_input(state["question"], state.get("skill_input"))
+        skill_update = {"requested_skill": skill.skill_id, "skill_version": skill.version,
+                        "skill_input": skill_input}
+        emit_event("SKILL_SELECTED", thread_id=state.get("thread_id"), skill_id=skill.skill_id,
+                   skill_version=skill.version, report_type=skill_input["report_type"])
     # 权威库用于纠正机构误判，但不能静默删掉问题中尚未入库的人名。
     try:
         discovered = get_entity_service().mentions_in_text(state["question"])
@@ -108,4 +122,4 @@ def router_node(state: GraphRAGState) -> dict:
     logger.info("Router: complexity=%s domain=%s mentions=%s", output.complexity, output.primary_domain, output.entity_mentions)
     emit_event("ROUTER_COMPLETED", thread_id=state.get("thread_id"), complexity=output.complexity, primary_domain=output.primary_domain,
                entity_mentions=output.entity_mentions)
-    return output.model_dump()
+    return output.model_dump() | skill_update

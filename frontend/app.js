@@ -21,12 +21,15 @@ const eventInfo = {
   EXPERIENCE_WRITTEN: ["experience", "本轮执行经验已沉淀"],
   EXPERIENCE_WRITEBACK_SKIPPED: ["experience", "本轮经验写回已跳过"],
   ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
+  SKILL_SELECTED: ["skill", "已选择运行时 Skill"],
+  SKILL_PLAN_CREATED: ["supervisor", "Skill 能力已展开为领域任务"],
   ENTITY_RESOLUTION_INTERRUPTED: ["entity", "检测到同名实体，等待用户确认"], ENTITY_RESOLUTION_COMPLETED: ["entity", "实体消歧完成"],
   ENTITY_NOT_FOUND: ["entity", "知识库中未找到实体"],
   SUPERVISOR_PLANNED: ["supervisor", "Supervisor 已生成执行计划"], AGENT_TOOL_CALLED: ["agents", "Agent 发起 Tool Call"],
   AGENT_TOOL_COMPLETED: ["agents", "Tool Observation 已返回"], AGENT_COMPLETED: ["agents", "领域 Agent 执行完成"],
   MERGE_COMPLETED: ["merge", "领域结果与证据已合并"], RULE_VALIDATION_COMPLETED: ["validator", "Rule Validator 校验完成"],
   VERIFICATION_COMPLETED: ["verification", "Verification Agent 判断完成"], ANSWER_GENERATED: ["answer", "最终答案已生成"],
+  EXPERT_REPORT_GENERATED: ["skill", "专家报告已完成证据化组装"],
   QUERY_RESUMED: ["entity", "从实体消歧中断点恢复"], QUERY_FAILED: ["answer", "查询执行失败"],
   NODE_EXECUTED: [null, "LangGraph Node 执行完成"], NODE_INTERRUPTED: [null, "LangGraph Node 已中断"],
   NODE_FAILED: [null, "LangGraph Node 执行失败"], RUN_STATUS_CHANGED: [null, "Graph Run 状态已更新"]
@@ -42,7 +45,7 @@ const nodeLabels = {
   enterprise_agent: "EnterpriseRelationAgent", industry_agent: "IndustryChainAgent",
   graph_reasoning_agent: "GraphReasoningAgent", merge: "Merge", validator: "Rule Validator",
   web_research_agent: "WebResearchAgent",
-  verification_agent: "VerificationAgent", answer: "Answer"
+  verification_agent: "VerificationAgent", expert_report: "Expert Report Composer", answer: "Answer"
 };
 
 function newThreadId() { return `ui-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
@@ -316,7 +319,8 @@ function renderExperience(graphState) {
 
 function renderResult(payload) {
   state.graphState = payload.state || {}; $("#stateJson").textContent = JSON.stringify(state.graphState, null, 2);
-  $("#answerText").textContent = payload.final_answer || state.graphState.final_answer || "暂无答案";
+  if (state.graphState.report_draft) renderExpertReport(state.graphState.report_draft);
+  else { $("#answerText").classList.remove("expert-report"); $("#answerText").textContent = payload.final_answer || state.graphState.final_answer || "暂无答案"; }
   const validation = state.graphState.validation_result || {}; const badge = $("#validationBadge");
   badge.textContent = validation.valid ? "VALIDATED" : "VALIDATION FAILED"; badge.style.color = validation.valid ? "var(--green)" : "var(--danger)";
   const chips = $("#entityChips"); chips.innerHTML = "";
@@ -330,6 +334,41 @@ function renderResult(payload) {
   }
   $("#answerPanel").classList.remove("hidden"); $("#answerPanel").scrollIntoView({behavior:"smooth", block:"start"}); finishRun("已完成");
   setTimeout(loadRunOptions, 250);
+}
+
+function renderExpertReport(report) {
+  const root = $("#answerText"); root.innerHTML = ""; root.classList.add("expert-report");
+  const evidenceOrder = new Map((report.evidence_ids || []).map((id, index) => [id, index + 1]));
+  const addText = (tag, value, className = "") => {
+    const element = document.createElement(tag); element.textContent = value;
+    if (className) element.className = className; root.appendChild(element); return element;
+  };
+  const citation = ids => {
+    const numbers = (ids || []).map(id => evidenceOrder.get(id)).filter(Boolean);
+    return numbers.length ? `〔证据 ${numbers.join(",")}〕` : "";
+  };
+  addText("h2", `${report.entity_name}专家报告`);
+  addText("p", `实体 ${report.entity_id} · ${report.report_type} · 面向 ${report.audience} · 证据覆盖率 ${(Number(report.evidence_coverage || 0) * 100).toFixed(0)}%`, "report-meta");
+  addText("h3", "执行摘要"); addText("p", report.executive_summary || "");
+  (report.sections || []).forEach(section => {
+    addText("h3", section.title);
+    addText("p", `状态：${section.status}。${section.summary}`, `report-status ${section.status}`);
+    const list = document.createElement("ul");
+    (section.claims || []).forEach(claim => {
+      const item = document.createElement("li"); item.textContent = `${claim.text} ${citation(claim.evidence_ids)}`; list.appendChild(item);
+    });
+    root.appendChild(list);
+  });
+  addText("h3", "风险与数据缺口");
+  const gaps = document.createElement("ul");
+  (report.risks_and_gaps || []).forEach(value => { const item = document.createElement("li"); item.textContent = value; gaps.appendChild(item); });
+  root.appendChild(gaps);
+  addText("h3", "证据目录");
+  const catalog = document.createElement("ol");
+  (report.evidence_catalog || []).forEach(record => {
+    const item = document.createElement("li"); item.textContent = `${record.source_name} / ${record.source_record_id}（${record.fact_type}）`; catalog.appendChild(item);
+  });
+  root.appendChild(catalog);
 }
 
 function runOptionLabel(run) {

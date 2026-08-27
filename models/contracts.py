@@ -10,6 +10,11 @@ AGENT_DOMAINS = {
 }
 
 FACT_TYPE_TO_TOOL = {
+    "person_profile": "get_person_profile",
+    "education": "get_education_history",
+    "employment": "get_employment_history",
+    "papers": "get_author_papers",
+    "patents": "get_person_patents",
     "employment_overlap": "match_employment_overlap",
     "common_papers": "get_common_papers",
     "common_projects": "get_common_projects",

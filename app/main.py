@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -44,6 +45,7 @@ from services.resources import (
     get_industry_service,
 )
 from services.run_service import RunManager
+from skills.registry import skill_registry
 
 
 @asynccontextmanager
@@ -83,6 +85,8 @@ class QueryRequest(BaseModel):
     conversation_id: str | None = Field(default=None, min_length=8, max_length=128)
     memory_enabled: bool = False
     experience_memory_enabled: bool = True
+    requested_skill: Literal["expert_report"] | None = None
+    skill_input: dict[str, Any] = Field(default_factory=dict)
 
 
 class ResumeRequest(BaseModel):
@@ -159,6 +163,12 @@ def metrics() -> dict:
     return runs.stats()
 
 
+@app.get("/skills")
+def list_runtime_skills() -> dict:
+    """公开可调用的运行时 Skill 元数据，不暴露 Agent/Tool 权限。"""
+    return {"skills": skill_registry.list()}
+
+
 @app.get("/", include_in_schema=False)
 def frontend() -> FileResponse:
     return FileResponse(frontend_dir / "index.html")
@@ -187,11 +197,14 @@ def create_query(request: QueryRequest) -> JSONResponse:
                                        "web_search_enabled": request.web_search_enabled,
                                        "memory_enabled": request.memory_enabled,
                                        "experience_memory_enabled": request.experience_memory_enabled,
+                                       "requested_skill": request.requested_skill,
                                        "conversation_id": conversation_id})
                 initial = {"thread_id": run_id, "question": request.question, "replan_count": 0,
                            "max_replans": request.max_replans, "web_search_enabled": request.web_search_enabled,
                            "conversation_id": conversation_id, "memory_enabled": request.memory_enabled,
                            "experience_memory_enabled": request.experience_memory_enabled,
+                           "requested_skill": request.requested_skill,
+                           "skill_input": request.skill_input,
                            "resolved_entities": {}, "task_history": []}
                 runs.submit(run_id, lambda: graph.invoke(initial, config=_config(run_id)), trace_context=trace_context)
                 submitted = True

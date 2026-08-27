@@ -19,7 +19,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements.txt ruff
       - run: ruff check . --select E9,F63,F7,F82
-      - run: python -m compileall -q agents app evaluation formatters graph models nodes repositories services tools scripts
+      - run: python -m compileall -q agents app evaluation formatters graph models nodes repositories services skills tools scripts
       - run: node --check frontend/app.js
       - run: pytest -q
       - run: python -m scripts.evaluate_stage9_e2e
@@ -27,6 +27,8 @@ jobs:
         run: python -m scripts.run_agent_evals --check --output .runtime/eval-report.json
       - name: Harness fault-injection regression gate
         run: python -m scripts.run_harness_evals --check --output .runtime/harness-eval-report.json
+      - name: Expert report skill regression gate
+        run: python -m scripts.run_expert_report_evals --check --output .runtime/expert-report-eval.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -34,3 +36,4 @@ jobs:
           path: |
             .runtime/eval-report.json
             .runtime/harness-eval-report.json
+            .runtime/expert-report-eval.json

@@ -79,6 +79,22 @@ def normalize_tool_output(tool_name: str, output: Any, fallback_entity_ids: list
                 source_tool=tool_name,
             ).model_dump())
         return records
+    if tool_name == "get_person_profile" and isinstance(output, dict) and output.get("entity_id"):
+        row = dict(output)
+        entity_id = str(row["entity_id"])
+        evidence_id = str(row.get("evidence_id") or
+                          "profile_" + hashlib.sha256(entity_id.encode("utf-8")).hexdigest()[:20])
+        row["evidence_id"] = evidence_id
+        return [EvidenceRecord(
+            evidence_id=evidence_id,
+            fact_type=FACT_TYPES[tool_name],
+            source_type=_source_type(str(row.get("source_backend") or "derived:entity_registry"), evidence_id),
+            source_name=str(row.get("source_backend") or "derived:entity_registry"),
+            source_record_id=entity_id,
+            entity_ids=[entity_id],
+            content=row,
+            source_tool=tool_name,
+        ).model_dump()]
     rows = output if isinstance(output, list) else [output]
     if tool_name in {"find_path", "calculate_path_strength"} and isinstance(output, dict):
         path = output.get("path", output)
@@ -91,11 +107,13 @@ def normalize_tool_output(tool_name: str, output: Any, fallback_entity_ids: list
         source = str(row.get("source_backend") or row.get("source_name") or row.get("source") or
                      ("derived:tool" if row.get("evidence_ids") else "unknown:tool"))
         for evidence_id in dict.fromkeys(str(item) for item in ids if item):
+            effective_source = ("mock:domain_repository"
+                                if source == "unknown:tool" and evidence_id.startswith("ev_") else source)
             record = EvidenceRecord(
                 evidence_id=evidence_id,
                 fact_type=FACT_TYPES.get(tool_name, tool_name),
-                source_type=_source_type(source, evidence_id),
-                source_name=source,
+                source_type=_source_type(effective_source, evidence_id),
+                source_name=effective_source,
                 source_record_id=_record_id(row, evidence_id),
                 entity_ids=_entity_ids(row, fallback_entity_ids),
                 event_time=row.get("year") or row.get("start_year") or row.get("date"),

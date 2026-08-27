@@ -69,6 +69,7 @@ class ValidationResult(BaseModel):
     needs_replan: bool = False
     missing_domains: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class VerificationResult(BaseModel):

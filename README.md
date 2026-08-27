@@ -1,6 +1,6 @@
 # 亿级科技知识图谱 Multi-Agent GraphRAG
 
-这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。第九阶段新增统一 EvidenceRecord、Neo4j 企业/产业 Repository、共享数据库 Client、真实依赖健康探针、MySQL→Neo4j 同步工具和端到端质量评测。
+这是一个可运行、可调试、用于学习与面试讲解的 Multi-Agent GraphRAG 示例。当前版本在统一 EvidenceRecord 和共享 Agent Harness 之上增加运行时 Skill，首个 `expert_report` Skill 可以编排现有领域能力并生成证据化专家报告。
 
 第六阶段新增统一 canonical entity ID、Dense/Sparse Embedding Provider、Milvus Lite Hybrid Search 和 RRF 实体召回。Shared State 只保存 canonical ID，各数据库内部 ID 只在 Service/Repository 边界转换。
 
@@ -28,6 +28,7 @@
 - WebResearchAgent仅在问题明确要求联网、最新资料、官网、新闻或外部查证时执行；网页结果作为带URL的外部候选证据，不覆盖图谱事实，也不自动回写图谱。
 - 对话记忆使用独立 `conversation_id` 跨多个 Run 保存已确认实体；Memory Node 在 Router 前解析“他/她/该教授”等指代，在 Answer 后写回，并与知识图谱事实库隔离。
 - 查询经验记忆将通过校验的历史 Run 聚合成归一化问题模板和成功策略，记录路由、Agent、Tool、延迟、Token 与成本；第一版默认 `Shadow`，只召回、评分和比较，不绕过 Router、Supervisor 或 Validator。
+- `expert_report` Skill 只声明 SOP、能力需求和输出协议；Supervisor 将能力展开为现有 Agent 任务，确定性 Composer 不持有 Tool 权限，只消费已验证证据，并支持企业、网络和联网章节降级。
 
 ## 领域能力
 
@@ -438,7 +439,10 @@ Mock 模型没有真实 Token，成本固定为 0。浏览器页面底部可以�
 `evals/golden_v1.jsonl` 固定包含 10 条实体消歧、20 条路由、20 条完整工作流用例。
 CI 使用 `evals/baselines/agentops_v1.json` 同时执行绝对门槛与相对回退检测，失败时阻止合并，并上传评测报告。
 `evals/harness_fault_cases.json` 独立评测 Harness Middleware、重复循环、瞬态故障恢复、超时分类、Observation 压缩和 Token 预算，避免改变业务黄金集的固定规模。
+`evals/expert_report_cases.json` 独立评测专家报告的完整/简版规划、引用有效性、输入保护和可选域故障降级。
 详细设计见 [docs/07_agent_evaluation_observability.md](docs/07_agent_evaluation_observability.md)。
+
+专家报告 Skill 的边界、调用协议和评测见 [docs/09_expert_report_skill.md](docs/09_expert_report_skill.md)。
 
 ## 后续阶段建议
 
