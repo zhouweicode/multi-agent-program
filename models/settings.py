@@ -65,6 +65,13 @@ class Settings:
     web_search_max_results: int = 5
     observability_db_path: str = ".runtime/observability.sqlite"
     conversation_memory_db_path: str = ".runtime/conversation-memory.sqlite"
+    query_experience_db_path: str = ".runtime/query-experience.sqlite"
+    query_experience_mode: str = "shadow"
+    query_experience_scope_id: str = "local"
+    query_experience_candidate_limit: int = 5
+    query_experience_min_samples: int = 5
+    query_experience_min_similarity: float = 0.72
+    query_experience_min_confidence: float = 0.75
     workflow_version: str = "stage10.1"
     prompt_version: str = "prompt-v1"
     model_input_cost_per_million: float = 0
@@ -128,6 +135,13 @@ class Settings:
                    web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
                    observability_db_path=os.getenv("OBSERVABILITY_DB_PATH", ".runtime/observability.sqlite"),
                    conversation_memory_db_path=os.getenv("CONVERSATION_MEMORY_DB_PATH", ".runtime/conversation-memory.sqlite"),
+                   query_experience_db_path=os.getenv("QUERY_EXPERIENCE_DB_PATH", ".runtime/query-experience.sqlite"),
+                   query_experience_mode=os.getenv("QUERY_EXPERIENCE_MODE", "shadow").lower(),
+                   query_experience_scope_id=os.getenv("QUERY_EXPERIENCE_SCOPE_ID", "local"),
+                   query_experience_candidate_limit=int(os.getenv("QUERY_EXPERIENCE_CANDIDATE_LIMIT", "5")),
+                   query_experience_min_samples=int(os.getenv("QUERY_EXPERIENCE_MIN_SAMPLES", "5")),
+                   query_experience_min_similarity=float(os.getenv("QUERY_EXPERIENCE_MIN_SIMILARITY", "0.72")),
+                   query_experience_min_confidence=float(os.getenv("QUERY_EXPERIENCE_MIN_CONFIDENCE", "0.75")),
                    workflow_version=os.getenv("WORKFLOW_VERSION", "stage10.1"),
                    prompt_version=os.getenv("PROMPT_VERSION", "prompt-v1"),
                    model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),

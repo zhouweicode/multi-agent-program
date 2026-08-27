@@ -20,6 +20,11 @@ from services.checkpoint_service import (
     close_sqlite_checkpointer,
 )
 from services.conversation_memory import close_conversation_memory, conversation_memory_repository
+from services.query_experience import (
+    close_query_experience,
+    query_experience_repository,
+    query_experience_stats,
+)
 from services.observability import clear_events, emit_event, get_events
 from services.telemetry import (
     activate_trace,
@@ -46,6 +51,7 @@ async def lifespan(_app: FastAPI):
     yield
     runs.close()
     close_conversation_memory()
+    close_query_experience()
     close_resources()
     close_sqlite_checkpointer()
 
@@ -76,6 +82,7 @@ class QueryRequest(BaseModel):
     web_search_enabled: bool = True
     conversation_id: str | None = Field(default=None, min_length=8, max_length=128)
     memory_enabled: bool = False
+    experience_memory_enabled: bool = True
 
 
 class ResumeRequest(BaseModel):
@@ -179,10 +186,12 @@ def create_query(request: QueryRequest) -> JSONResponse:
                            node_input={"question": request.question, "run_id": run_id, "max_replans": request.max_replans,
                                        "web_search_enabled": request.web_search_enabled,
                                        "memory_enabled": request.memory_enabled,
+                                       "experience_memory_enabled": request.experience_memory_enabled,
                                        "conversation_id": conversation_id})
                 initial = {"thread_id": run_id, "question": request.question, "replan_count": 0,
                            "max_replans": request.max_replans, "web_search_enabled": request.web_search_enabled,
                            "conversation_id": conversation_id, "memory_enabled": request.memory_enabled,
+                           "experience_memory_enabled": request.experience_memory_enabled,
                            "resolved_entities": {}, "task_history": []}
                 runs.submit(run_id, lambda: graph.invoke(initial, config=_config(run_id)), trace_context=trace_context)
                 submitted = True
@@ -194,6 +203,7 @@ def create_query(request: QueryRequest) -> JSONResponse:
     return JSONResponse(status_code=202, content={"run_id": run_id, "thread_id": run_id,
                                                    "conversation_id": conversation_id,
                                                    "memory_enabled": request.memory_enabled,
+                                                   "experience_memory_enabled": request.experience_memory_enabled,
                                                    "trace_id": trace_context.trace_id, "status": "RUNNING"})
 
 
@@ -219,6 +229,20 @@ def clear_conversation_memory(conversation_id: str) -> dict:
     emit_event("MEMORY_CLEARED", conversation_id=conversation_id,
                deleted_turns=result["deleted_turns"], deleted_entities=result["deleted_entities"])
     return result
+
+
+@app.get("/experience-memory/stats")
+def get_query_experience_stats() -> dict:
+    return query_experience_stats()
+
+
+@app.get("/experience-memory/patterns")
+def get_query_experience_patterns(limit: int = 50) -> dict:
+    settings = Settings.from_env()
+    patterns = query_experience_repository().list_patterns(
+        settings.query_experience_scope_id, max(1, min(limit, 200)))
+    return {"patterns": patterns, "count": len(patterns),
+            "scope_id": settings.query_experience_scope_id, "mode": settings.query_experience_mode}
 
 
 @app.post("/queries/{run_id}/resume", status_code=202)

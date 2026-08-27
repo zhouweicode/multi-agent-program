@@ -4,6 +4,7 @@ const state = {
   graphState: {}, running: false, stopping: false, webSearchEnabled: true,
   conversationId: sessionStorage.getItem("graphrag.conversationId"),
   memoryEnabled: sessionStorage.getItem("graphrag.memoryEnabled") === "true",
+  experienceMemoryEnabled: sessionStorage.getItem("graphrag.experienceMemoryEnabled") !== "false",
   memoryEntities: [], memoryTurnCount: 0,
 };
 
@@ -13,6 +14,12 @@ const eventInfo = {
   MEMORY_REFERENCE_RESOLVED: ["memory", "已通过会话记忆完成指代解析"],
   MEMORY_REFERENCE_AMBIGUOUS: ["memory", "会话指代存在多个候选，等待确认"],
   MEMORY_WRITTEN: ["memory", "本轮实体已写入会话记忆"],
+  EXPERIENCE_RECALL_HIT: ["experience", "命中历史查询策略"],
+  EXPERIENCE_RECALL_MISS: ["experience", "未命中历史查询策略"],
+  EXPERIENCE_RECALL_DISABLED: ["experience", "查询经验记忆已关闭"],
+  EXPERIENCE_ROUTE_COMPARED: ["experience", "历史路由与当前路由已比较"],
+  EXPERIENCE_WRITTEN: ["experience", "本轮执行经验已沉淀"],
+  EXPERIENCE_WRITEBACK_SKIPPED: ["experience", "本轮经验写回已跳过"],
   ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
   ENTITY_RESOLUTION_INTERRUPTED: ["entity", "检测到同名实体，等待用户确认"], ENTITY_RESOLUTION_COMPLETED: ["entity", "实体消歧完成"],
   ENTITY_NOT_FOUND: ["entity", "知识库中未找到实体"],
@@ -28,6 +35,8 @@ const eventInfo = {
 const nodeLabels = {
   conversation_memory_recall: "Conversation Memory Recall",
   conversation_memory_writeback: "Conversation Memory Writeback",
+  query_experience_recall: "Query Experience Recall",
+  query_experience_writeback: "Query Experience Writeback",
   router: "Router", entity_resolution: "Entity Resolution", supervisor: "Supervisor",
   talent_agent: "TalentAgent", achievement_agent: "AchievementAgent",
   enterprise_agent: "EnterpriseRelationAgent", industry_agent: "IndustryChainAgent",
@@ -48,6 +57,7 @@ function setSubmitMode(mode) {
   button.disabled = state.stopping;
   $("#webSearchToggle").disabled = state.running;
   $("#conversationMemoryToggle").disabled = state.running;
+  $("#experienceMemoryToggle").disabled = state.running;
   $("#clearConversationMemory").disabled = state.running || !state.conversationId;
   $("#submitLabel").textContent = mode === "running" ? "停止分析" : mode === "stopping" ? "正在停止" : "开始分析";
   $("#submitIcon").textContent = mode === "running" ? "■" : mode === "stopping" ? "…" : "→";
@@ -58,6 +68,13 @@ function renderWebSearchToggle() {
   button.setAttribute("aria-pressed", String(state.webSearchEnabled));
   button.title = state.webSearchEnabled ? "点击关闭联网搜索" : "点击开启联网搜索";
   $("#webSearchToggleLabel").textContent = `联网搜索：${state.webSearchEnabled ? "已开启" : "已关闭"}`;
+}
+function renderExperienceMemoryToggle() {
+  const button = $("#experienceMemoryToggle");
+  button.classList.toggle("enabled", state.experienceMemoryEnabled);
+  button.setAttribute("aria-pressed", String(state.experienceMemoryEnabled));
+  button.title = state.experienceMemoryEnabled ? "点击关闭查询经验记忆" : "点击开启查询经验记忆";
+  $("#experienceMemoryToggleLabel").textContent = `经验记忆：${state.experienceMemoryEnabled ? "已开启" : "已关闭"}`;
 }
 function ensureConversationId() {
   if (!state.conversationId) {
@@ -261,6 +278,42 @@ function renderWebSources(graphState) {
   panel.classList.remove("hidden");
 }
 
+function renderExperience(graphState) {
+  const panel = $("#experiencePanel");
+  if (!graphState.experience_memory_enabled) { panel.classList.add("hidden"); return; }
+  const match = graphState.experience_match;
+  const pattern = graphState.experience_pattern;
+  const strategy = graphState.experience_strategy || pattern?.strategy || {};
+  const hit = graphState.experience_recall_status === "HIT" && match;
+  $("#experienceStatus").textContent = hit ? "HIT · SHADOW" : "MISS · LEARNED";
+  $("#experienceSummary").textContent = hit
+    ? `命中历史模式 ${match.pattern_id}。当前处于 Shadow 模式，仅比较并展示策略，不绕过 Router、实体消歧或 Validator。`
+    : `本次没有可复用的历史模式；执行完成后已${graphState.experience_writeback_status === "WRITTEN" ? "沉淀" : "检查"}本轮经验。`;
+  const specs = hit ? [
+    ["相似度", `${(Number(match.similarity || 0) * 100).toFixed(1)}%`],
+    ["置信度", `${(Number(match.confidence || 0) * 100).toFixed(1)}%`],
+    ["历史样本", String(match.sample_count || 0)],
+    ["成功率", `${(Number(match.success_rate || 0) * 100).toFixed(1)}%`],
+    ["路由一致", match.route_agreement ? "是" : "否"],
+    ["可进入 Assist", match.applicable ? "是" : "样本不足"],
+  ] : [
+    ["模式样本", String(pattern?.sample_count || 1)],
+    ["本轮质量", `${(Number(pattern?.average_quality || 0) * 100).toFixed(1)}%`],
+    ["写回状态", graphState.experience_writeback_status || "SKIPPED"],
+  ];
+  const metrics = $("#experienceMetrics"); metrics.innerHTML = "";
+  specs.forEach(([label, value]) => {
+    const card = document.createElement("div");
+    const name = document.createElement("span"); name.textContent = label;
+    const main = document.createElement("strong"); main.textContent = value;
+    card.append(name, main); metrics.appendChild(card);
+  });
+  const agents = (strategy.agents || []).join(" → ") || "暂无推荐 Agent";
+  const toolRows = Object.entries(strategy.tools_by_agent || {}).map(([agent, tools]) => `${agent}: ${tools.join(" → ")}`).join("；");
+  $("#experienceStrategy").textContent = `历史策略：${agents}${toolRows ? `｜${toolRows}` : ""}`;
+  panel.classList.remove("hidden");
+}
+
 function renderResult(payload) {
   state.graphState = payload.state || {}; $("#stateJson").textContent = JSON.stringify(state.graphState, null, 2);
   $("#answerText").textContent = payload.final_answer || state.graphState.final_answer || "暂无答案";
@@ -269,6 +322,7 @@ function renderResult(payload) {
   const chips = $("#entityChips"); chips.innerHTML = "";
   Object.entries(state.graphState.resolved_entities || {}).forEach(([name, id]) => { const chip = document.createElement("span"); chip.textContent = `${name} · ${id}`; chips.appendChild(chip); });
   renderWebSources(state.graphState);
+  renderExperience(state.graphState);
   if (state.memoryEnabled) {
     state.memoryEntities = state.graphState.conversation_entities || state.memoryEntities;
     state.memoryTurnCount = Number(state.graphState.conversation_turn_count || state.memoryTurnCount);
@@ -396,7 +450,7 @@ $("#queryForm").addEventListener("submit", async event => {
   if (state.running) { await cancelCurrentAnalysis(); return; }
   resetUI(); state.threadId = newThreadId(); setSubmitMode("running");
   const button = $("#submitBtn"); button.disabled = true;
-  try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value), web_search_enabled:state.webSearchEnabled, memory_enabled:state.memoryEnabled, conversation_id:state.memoryEnabled ? ensureConversationId() : null})}); await handleResponse(response); }
+  try { const response = await fetch("/queries", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({question:$("#question").value.trim(), thread_id:state.threadId, max_replans:Number($("#maxReplans").value), web_search_enabled:state.webSearchEnabled, memory_enabled:state.memoryEnabled, conversation_id:state.memoryEnabled ? ensureConversationId() : null, experience_memory_enabled:state.experienceMemoryEnabled})}); await handleResponse(response); }
   catch (error) { finishRun("执行失败"); alert(`执行失败：${error.message}`); stopEventStream(); }
   finally { if (!state.stopping) button.disabled = false; }
 });
@@ -428,6 +482,12 @@ $("#webSearchToggle").addEventListener("click", () => {
   state.webSearchEnabled = !state.webSearchEnabled;
   renderWebSearchToggle();
 });
+$("#experienceMemoryToggle").addEventListener("click", () => {
+  if (state.running) return;
+  state.experienceMemoryEnabled = !state.experienceMemoryEnabled;
+  sessionStorage.setItem("graphrag.experienceMemoryEnabled", String(state.experienceMemoryEnabled));
+  renderExperienceMemoryToggle();
+});
 $("#conversationMemoryToggle").addEventListener("click", async () => {
   if (state.running) return;
   state.memoryEnabled = !state.memoryEnabled;
@@ -454,6 +514,7 @@ $("#compareRuns").addEventListener("click", compareSelectedRuns);
 
 fetch("/health").then(response => response.json()).then(payload => { $("#healthDot").classList.add("online"); $("#healthText").textContent = `Stage ${payload.stage} · ${payload.embedding_provider} · ${payload.entity_backend}`; }).catch(() => { $("#healthText").textContent = "系统离线"; });
 renderWebSearchToggle();
+renderExperienceMemoryToggle();
 renderConversationMemory();
 if (state.memoryEnabled) refreshConversationMemory();
 loadRunOptions();

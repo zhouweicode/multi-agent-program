@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>科技知识图谱 · Multi-Agent GraphRAG</title>
-  <link rel="icon" href="/static/favicon.svg?v=20260826-4" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=20260826-4">
-  <link rel="stylesheet" href="/static/layout-fix.css?v=20260826-4">
+  <link rel="icon" href="/static/favicon.svg?v=20260827-1" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v=20260827-1">
+  <link rel="stylesheet" href="/static/layout-fix.css?v=20260827-1">
 </head>
 <body>
   <div class="ambient ambient-one"></div>
@@ -54,6 +54,10 @@
               <span id="conversationMemoryToggleLabel">对话记忆：已关闭</span>
             </button>
             <button id="clearConversationMemory" class="memory-clear" type="button" disabled>清除记忆</button>
+            <button id="experienceMemoryToggle" class="web-search-toggle enabled" type="button" aria-pressed="true" title="点击关闭查询经验记忆">
+              <span class="web-toggle-dot" aria-hidden="true"></span>
+              <span id="experienceMemoryToggleLabel">经验记忆：已开启</span>
+            </button>
             <button id="webSearchToggle" class="web-search-toggle enabled" type="button" aria-pressed="true" title="点击关闭联网搜索">
               <span class="web-toggle-dot" aria-hidden="true"></span>
               <span id="webSearchToggleLabel">联网搜索：已开启</span>
@@ -82,9 +86,11 @@
             <span class="connector">→</span>
             <div class="flow-node" data-node="router"><i>03</i><strong>Router</strong><small>意图与领域分类</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="entity"><i>04</i><strong>Entity Resolution</strong><small>MySQL + BGE-M3 + RRF</small></div>
+            <div class="flow-node optional" data-node="experience"><i>04</i><strong>Experience</strong><small>历史策略召回与对比</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="supervisor"><i>05</i><strong>Supervisor</strong><small>任务拆解与调度</small></div>
+            <div class="flow-node" data-node="entity"><i>05</i><strong>Entity Resolution</strong><small>MySQL + BGE-M3 + RRF</small></div>
+            <span class="connector">→</span>
+            <div class="flow-node" data-node="supervisor"><i>06</i><strong>Supervisor</strong><small>任务拆解与调度</small></div>
             <span class="connector">→</span>
             <div class="agent-cluster" data-node="agents">
               <span data-agent="talent_agent">Talent</span><span data-agent="achievement_agent">Achievement</span>
@@ -93,13 +99,13 @@
               <span data-agent="web_research_agent">Web</span>
             </div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="merge"><i>06</i><strong>Merge</strong><small>结果与证据汇总</small></div>
+            <div class="flow-node" data-node="merge"><i>07</i><strong>Merge</strong><small>结果与证据汇总</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="validator"><i>07</i><strong>Validator</strong><small>确定性规则校验</small></div>
+            <div class="flow-node" data-node="validator"><i>08</i><strong>Validator</strong><small>确定性规则校验</small></div>
             <span class="connector">→</span>
-            <div class="flow-node optional" data-node="verification"><i>08</i><strong>Verification</strong><small>复杂语义判断</small></div>
+            <div class="flow-node optional" data-node="verification"><i>09</i><strong>Verification</strong><small>复杂语义判断</small></div>
             <span class="connector">→</span>
-            <div class="flow-node" data-node="answer"><i>09</i><strong>Answer</strong><small>生成可信答案</small></div>
+            <div class="flow-node" data-node="answer"><i>10</i><strong>Answer</strong><small>生成可信答案</small></div>
           </div>
       </section>
 
@@ -113,6 +119,15 @@
         <section id="answerPanel" class="panel answer-panel hidden">
           <div class="section-heading"><div><span class="section-index">03</span><h2>最终答案</h2></div><span id="validationBadge" class="pass-badge">VALIDATED</span></div>
           <div id="answerText" class="answer-text"></div>
+          <section id="experiencePanel" class="experience-panel hidden" aria-labelledby="experienceTitle">
+            <div class="experience-heading">
+              <div><span class="section-index">MEMORY</span><h3 id="experienceTitle">查询经验</h3></div>
+              <span id="experienceStatus" class="run-badge">MISS</span>
+            </div>
+            <p id="experienceSummary"></p>
+            <div id="experienceMetrics" class="experience-metrics"></div>
+            <div id="experienceStrategy" class="experience-strategy"></div>
+          </section>
           <section id="webSourcesPanel" class="web-sources hidden" aria-labelledby="webSourcesTitle">
             <div class="web-sources-heading">
               <h3 id="webSourcesTitle">联网参考来源</h3>
@@ -173,6 +188,6 @@
     </div>
   </dialog>
   <footer>GraphRAG Studio · 数据库返回什么，答案就只说什么</footer>
-  <script src="/static/app.js?v=20260826-4" defer></script>
+  <script src="/static/app.js?v=20260827-1" defer></script>
 </body>
 </html>

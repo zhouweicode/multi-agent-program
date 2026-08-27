@@ -10,6 +10,7 @@ from repositories.run_repository import SQLiteRunRepository
 from services.run_control import RunCancelledError, clear_run, raise_if_stopped, register_run, request_stop
 from services.observability import emit_event
 from services.telemetry import TraceContext, activate_trace, finish_run_trace, traced_span
+from services.query_experience import finalize_query_experience_metrics
 
 
 class RunManager:
@@ -125,6 +126,7 @@ class RunManager:
             record = self.get(run_id) or {}
             result = record.get("result") or {}
             finish_run_trace(trace_context, record.get("status", "FAILED"), int(result.get("replan_count", 0) or 0))
+            finalize_query_experience_metrics(run_id)
             with self._lock:
                 self._trace_contexts.pop(run_id, None)
 

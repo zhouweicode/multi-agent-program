@@ -13,6 +13,16 @@ class GraphRAGState(TypedDict, total=False):
     memory_reference_resolution: dict[str, dict[str, str]]
     conversation_entities: list[dict[str, Any]]
     conversation_turn_count: int
+    experience_memory_enabled: bool
+    experience_recall_status: str
+    experience_writeback_status: str
+    experience_mode: str
+    experience_query_template: str
+    experience_candidates: list[dict[str, Any]]
+    experience_match: dict[str, Any] | None
+    experience_strategy: dict[str, Any]
+    experience_route_agreement: bool
+    experience_pattern: dict[str, Any]
     web_search_enabled: bool
     intent: str
     complexity: str

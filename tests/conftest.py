@@ -14,3 +14,4 @@ os.environ.setdefault("CHECKPOINT_DB_PATH", f"/tmp/multi-agent-program-tests-{os
 os.environ.setdefault("RUN_REGISTRY_PATH", f"/tmp/multi-agent-program-runs-{os.getpid()}.sqlite")
 os.environ.setdefault("OBSERVABILITY_DB_PATH", f"/tmp/multi-agent-program-observability-{os.getpid()}.sqlite")
 os.environ.setdefault("CONVERSATION_MEMORY_DB_PATH", f"/tmp/multi-agent-program-memory-{os.getpid()}.sqlite")
+os.environ.setdefault("QUERY_EXPERIENCE_DB_PATH", f"/tmp/multi-agent-program-experience-{os.getpid()}.sqlite")

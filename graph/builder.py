@@ -20,6 +20,7 @@ from nodes.agent_nodes import (
 from nodes.answer_node import answer_node
 from nodes.conversation_memory_node import conversation_memory_recall_node, conversation_memory_writeback_node
 from nodes.entity_resolution_node import entity_resolution_node
+from nodes.query_experience_node import query_experience_recall_node, query_experience_writeback_node
 from nodes.merge_node import merge_node
 from nodes.router_node import router_node
 from nodes.supervisor_node import supervisor_node
@@ -32,6 +33,7 @@ def build_graph(checkpointer=None):
     graph = StateGraph(GraphRAGState)
     graph.add_node("conversation_memory_recall", traced_node("conversation_memory_recall", conversation_memory_recall_node))
     graph.add_node("router", traced_node("router", router_node))
+    graph.add_node("query_experience_recall", traced_node("query_experience_recall", query_experience_recall_node))
     graph.add_node("entity_resolution", traced_node("entity_resolution", entity_resolution_node))
     graph.add_node("supervisor", traced_node("supervisor", supervisor_node))
     graph.add_node("talent_agent", traced_node("talent_agent", talent_agent_node))
@@ -44,10 +46,12 @@ def build_graph(checkpointer=None):
     graph.add_node("validator", traced_node("validator", validator_node))
     graph.add_node("answer", traced_node("answer", answer_node))
     graph.add_node("conversation_memory_writeback", traced_node("conversation_memory_writeback", conversation_memory_writeback_node))
+    graph.add_node("query_experience_writeback", traced_node("query_experience_writeback", query_experience_writeback_node))
     graph.add_node("verification_agent", traced_node("verification_agent", verification_agent_node))
     graph.add_edge(START, "conversation_memory_recall")
     graph.add_edge("conversation_memory_recall", "router")
-    graph.add_edge("router", "entity_resolution")
+    graph.add_edge("router", "query_experience_recall")
+    graph.add_edge("query_experience_recall", "entity_resolution")
     graph.add_conditional_edges("entity_resolution", after_resolution,
                                 {"supervisor": "supervisor", "talent": "talent_agent", "achievement": "achievement_agent",
                                  "enterprise": "enterprise_agent", "industry": "industry_agent", "graph": "graph_reasoning_agent",
@@ -67,5 +71,6 @@ def build_graph(checkpointer=None):
     graph.add_conditional_edges("verification_agent", after_verification,
                                 {"supervisor": "supervisor", "answer": "answer"})
     graph.add_edge("answer", "conversation_memory_writeback")
-    graph.add_edge("conversation_memory_writeback", END)
+    graph.add_edge("conversation_memory_writeback", "query_experience_writeback")
+    graph.add_edge("query_experience_writeback", END)
     return graph.compile(checkpointer=checkpointer or InMemorySaver())
