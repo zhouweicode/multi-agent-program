@@ -20,12 +20,15 @@ class SQLiteQueryExperienceRepository:
         self._connection = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._connection.row_factory = sqlite3.Row
         self._lock = Lock()
+        self._migrate_legacy_schema()
         with self._connection:
             self._connection.execute("PRAGMA journal_mode=WAL")
             self._connection.execute("PRAGMA busy_timeout=30000")
+            self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.executescript("""
                 CREATE TABLE IF NOT EXISTS query_experience_patterns (
                     pattern_id TEXT PRIMARY KEY,
+                    scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL,
                     query_template TEXT NOT NULL,
                     strategy_json TEXT NOT NULL,
@@ -38,13 +41,17 @@ class SQLiteQueryExperienceRepository:
                     average_cost REAL NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    UNIQUE(scope_id, query_template)
+                    UNIQUE(scope_type, scope_id, query_template)
                 );
                 CREATE INDEX IF NOT EXISTS idx_experience_patterns_scope
-                    ON query_experience_patterns(scope_id, success_count DESC, updated_at DESC);
+                    ON query_experience_patterns(
+                        scope_type, scope_id, success_count DESC, updated_at DESC
+                    );
                 CREATE TABLE IF NOT EXISTS query_experience_events (
-                    run_id TEXT PRIMARY KEY,
+                    event_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
                     pattern_id TEXT NOT NULL,
+                    scope_type TEXT NOT NULL,
                     scope_id TEXT NOT NULL,
                     normalized_question TEXT NOT NULL,
                     query_template TEXT NOT NULL,
@@ -57,11 +64,113 @@ class SQLiteQueryExperienceRepository:
                     total_tokens INTEGER,
                     cost REAL,
                     created_at TEXT NOT NULL,
-                    FOREIGN KEY(pattern_id) REFERENCES query_experience_patterns(pattern_id)
+                    FOREIGN KEY(pattern_id) REFERENCES query_experience_patterns(pattern_id),
+                    UNIQUE(scope_type, scope_id, run_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_experience_events_pattern
                     ON query_experience_events(pattern_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_experience_events_run
+                    ON query_experience_events(run_id, scope_type, scope_id);
             """)
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self._connection.execute(
+                f'PRAGMA table_info("{table_name}")'
+            ).fetchall()
+        }
+
+    def _migrate_legacy_schema(self) -> None:
+        """Quarantine pre-scope experience instead of assigning it to users.
+
+        The old event rows contain normalized raw questions. The migration keeps
+        them for audit under a non-recallable ``legacy`` scope and replaces that
+        field with the already-normalized template.
+        """
+        pattern_columns = self._table_columns("query_experience_patterns")
+        if not pattern_columns or "scope_type" in pattern_columns:
+            return
+
+        self._connection.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with self._connection:
+                self._connection.executescript("""
+                    CREATE TABLE query_experience_patterns_v2 (
+                        pattern_id TEXT PRIMARY KEY,
+                        scope_type TEXT NOT NULL,
+                        scope_id TEXT NOT NULL,
+                        query_template TEXT NOT NULL,
+                        strategy_json TEXT NOT NULL,
+                        sample_count INTEGER NOT NULL DEFAULT 0,
+                        success_count INTEGER NOT NULL DEFAULT 0,
+                        failure_count INTEGER NOT NULL DEFAULT 0,
+                        average_quality REAL NOT NULL DEFAULT 0,
+                        average_duration_ms REAL NOT NULL DEFAULT 0,
+                        average_tokens REAL NOT NULL DEFAULT 0,
+                        average_cost REAL NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE(scope_type, scope_id, query_template)
+                    );
+                    CREATE TABLE query_experience_events_v2 (
+                        event_id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        pattern_id TEXT NOT NULL,
+                        scope_type TEXT NOT NULL,
+                        scope_id TEXT NOT NULL,
+                        normalized_question TEXT NOT NULL,
+                        query_template TEXT NOT NULL,
+                        strategy_json TEXT NOT NULL,
+                        outcome TEXT NOT NULL,
+                        eligible INTEGER NOT NULL,
+                        validation_pass INTEGER NOT NULL,
+                        quality_score REAL NOT NULL,
+                        duration_ms REAL,
+                        total_tokens INTEGER,
+                        cost REAL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(pattern_id)
+                            REFERENCES query_experience_patterns_v2(pattern_id),
+                        UNIQUE(scope_type, scope_id, run_id)
+                    );
+                """)
+                self._connection.execute("""
+                    INSERT INTO query_experience_patterns_v2(
+                        pattern_id, scope_type, scope_id, query_template,
+                        strategy_json, sample_count, success_count, failure_count,
+                        average_quality, average_duration_ms, average_tokens,
+                        average_cost, created_at, updated_at
+                    )
+                    SELECT pattern_id, 'legacy', scope_id, query_template,
+                           strategy_json, sample_count, success_count, failure_count,
+                           average_quality, average_duration_ms, average_tokens,
+                           average_cost, created_at, updated_at
+                    FROM query_experience_patterns
+                """)
+                self._connection.execute("""
+                    INSERT INTO query_experience_events_v2(
+                        event_id, run_id, pattern_id, scope_type, scope_id,
+                        normalized_question, query_template, strategy_json,
+                        outcome, eligible, validation_pass, quality_score,
+                        duration_ms, total_tokens, cost, created_at
+                    )
+                    SELECT 'legacy:' || run_id, run_id, pattern_id, 'legacy', scope_id,
+                           query_template, query_template, strategy_json,
+                           outcome, eligible, validation_pass, quality_score,
+                           duration_ms, total_tokens, cost, created_at
+                    FROM query_experience_events
+                """)
+                self._connection.executescript("""
+                    DROP TABLE query_experience_events;
+                    DROP TABLE query_experience_patterns;
+                    ALTER TABLE query_experience_patterns_v2
+                        RENAME TO query_experience_patterns;
+                    ALTER TABLE query_experience_events_v2
+                        RENAME TO query_experience_events;
+                """)
+        finally:
+            self._connection.execute("PRAGMA foreign_keys=ON")
 
     @staticmethod
     def _decode_pattern(row: sqlite3.Row) -> dict[str, Any]:
@@ -77,7 +186,9 @@ class SQLiteQueryExperienceRepository:
         now = _now()
         with self._lock, self._connection:
             exists = self._connection.execute(
-                "SELECT 1 FROM query_experience_events WHERE run_id=?", (event["run_id"],)
+                """SELECT 1 FROM query_experience_events
+                   WHERE scope_type=? AND scope_id=? AND run_id=?""",
+                (event["scope_type"], event["scope_id"], event["run_id"]),
             ).fetchone()
             if exists:
                 return False
@@ -104,18 +215,22 @@ class SQLiteQueryExperienceRepository:
             else:
                 self._connection.execute("""
                     INSERT INTO query_experience_patterns(
-                        pattern_id, scope_id, query_template, strategy_json, sample_count,
+                        pattern_id, scope_type, scope_id, query_template,
+                        strategy_json, sample_count,
                         success_count, failure_count, average_quality, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                """, (event["pattern_id"], event["scope_id"], event["query_template"],
+                    ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                """, (event["pattern_id"], event["scope_type"], event["scope_id"],
+                      event["query_template"],
                       json.dumps(event["strategy"], ensure_ascii=False), int(event["eligible"]),
                       int(not event["eligible"]), round(float(event["quality_score"]), 6), now, now))
             self._connection.execute("""
                 INSERT INTO query_experience_events(
-                    run_id, pattern_id, scope_id, normalized_question, query_template,
+                    event_id, run_id, pattern_id, scope_type, scope_id,
+                    normalized_question, query_template,
                     strategy_json, outcome, eligible, validation_pass, quality_score, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (event["run_id"], event["pattern_id"], event["scope_id"],
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (event["event_id"], event["run_id"], event["pattern_id"],
+                  event["scope_type"], event["scope_id"],
                   event["normalized_question"], event["query_template"],
                   json.dumps(event["strategy"], ensure_ascii=False), event["outcome"],
                   int(event["eligible"]), int(event["validation_pass"]),
@@ -124,37 +239,40 @@ class SQLiteQueryExperienceRepository:
 
     def finalize_metrics(self, run_id: str, metrics: dict[str, Any]) -> bool:
         with self._lock, self._connection:
-            event = self._connection.execute(
+            events = self._connection.execute(
                 "SELECT pattern_id FROM query_experience_events WHERE run_id=?", (run_id,)
-            ).fetchone()
-            if not event:
+            ).fetchall()
+            if not events:
                 return False
             self._connection.execute("""
                 UPDATE query_experience_events SET duration_ms=?, total_tokens=?, cost=? WHERE run_id=?
             """, (float(metrics.get("duration_ms") or 0), int(metrics.get("total_tokens") or 0),
                   float(metrics.get("cost") or 0), run_id))
-            aggregates = self._connection.execute("""
-                SELECT AVG(COALESCE(duration_ms, 0)) AS duration_ms,
-                       AVG(COALESCE(total_tokens, 0)) AS tokens,
-                       AVG(COALESCE(cost, 0)) AS cost
-                FROM query_experience_events WHERE pattern_id=?
-            """, (event["pattern_id"],)).fetchone()
-            self._connection.execute("""
-                UPDATE query_experience_patterns SET average_duration_ms=?, average_tokens=?,
-                    average_cost=?, updated_at=? WHERE pattern_id=?
-            """, (round(float(aggregates["duration_ms"] or 0), 3),
-                  round(float(aggregates["tokens"] or 0), 3),
-                  round(float(aggregates["cost"] or 0), 8), _now(), event["pattern_id"]))
+            for pattern_id in {event["pattern_id"] for event in events}:
+                aggregates = self._connection.execute("""
+                    SELECT AVG(COALESCE(duration_ms, 0)) AS duration_ms,
+                           AVG(COALESCE(total_tokens, 0)) AS tokens,
+                           AVG(COALESCE(cost, 0)) AS cost
+                    FROM query_experience_events WHERE pattern_id=?
+                """, (pattern_id,)).fetchone()
+                self._connection.execute("""
+                    UPDATE query_experience_patterns
+                    SET average_duration_ms=?, average_tokens=?,
+                        average_cost=?, updated_at=? WHERE pattern_id=?
+                """, (round(float(aggregates["duration_ms"] or 0), 3),
+                      round(float(aggregates["tokens"] or 0), 3),
+                      round(float(aggregates["cost"] or 0), 8), _now(), pattern_id))
         return True
 
-    def list_patterns(self, scope_id: str, limit: int = 100, positive_only: bool = False) -> list[dict[str, Any]]:
+    def list_patterns(self, scope_type: str, scope_id: str, limit: int = 100,
+                      positive_only: bool = False) -> list[dict[str, Any]]:
         clause = "AND success_count > 0" if positive_only else ""
         with self._lock:
             rows = self._connection.execute(f"""
                 SELECT * FROM query_experience_patterns
-                WHERE scope_id=? {clause}
+                WHERE scope_type=? AND scope_id=? {clause}
                 ORDER BY success_count DESC, updated_at DESC LIMIT ?
-            """, (scope_id, max(1, min(limit, 500)))).fetchall()
+            """, (scope_type, scope_id, max(1, min(limit, 500)))).fetchall()
         return [self._decode_pattern(row) for row in rows]
 
     def get_pattern(self, pattern_id: str) -> dict[str, Any] | None:
@@ -164,7 +282,7 @@ class SQLiteQueryExperienceRepository:
             ).fetchone()
         return self._decode_pattern(row) if row else None
 
-    def stats(self, scope_id: str) -> dict[str, Any]:
+    def stats(self, scope_type: str, scope_id: str) -> dict[str, Any]:
         with self._lock:
             row = self._connection.execute("""
                 SELECT COUNT(*) AS pattern_count, COALESCE(SUM(sample_count), 0) AS event_count,
@@ -173,11 +291,35 @@ class SQLiteQueryExperienceRepository:
                        COALESCE(AVG(average_quality), 0) AS average_quality,
                        COALESCE(AVG(average_duration_ms), 0) AS average_duration_ms,
                        COALESCE(SUM(average_cost * sample_count), 0) AS total_cost
-                FROM query_experience_patterns WHERE scope_id=?
-            """, (scope_id,)).fetchone()
+                FROM query_experience_patterns
+                WHERE scope_type=? AND scope_id=?
+            """, (scope_type, scope_id)).fetchone()
         return {key: (round(float(row[key]), 6) if key in {
                     "average_quality", "average_duration_ms", "total_cost"} else int(row[key]))
                 for key in row.keys()}
+
+    def clear_experience_scope(self, scope_type: str, scope_id: str) -> dict[str, int]:
+        with self._lock, self._connection:
+            event_count = int(self._connection.execute(
+                """SELECT COUNT(*) FROM query_experience_events
+                   WHERE scope_type=? AND scope_id=?""",
+                (scope_type, scope_id),
+            ).fetchone()[0])
+            pattern_count = int(self._connection.execute(
+                """SELECT COUNT(*) FROM query_experience_patterns
+                   WHERE scope_type=? AND scope_id=?""",
+                (scope_type, scope_id),
+            ).fetchone()[0])
+            self._connection.execute(
+                "DELETE FROM query_experience_events WHERE scope_type=? AND scope_id=?",
+                (scope_type, scope_id),
+            )
+            self._connection.execute(
+                "DELETE FROM query_experience_patterns WHERE scope_type=? AND scope_id=?",
+                (scope_type, scope_id),
+            )
+        return {"deleted_experience_events": event_count,
+                "deleted_experience_patterns": pattern_count}
 
     def close(self) -> None:
         with self._lock:

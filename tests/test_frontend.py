@@ -26,15 +26,26 @@ def test_frontend_index_and_assets_are_served():
     assert 'id="conversationMemoryToggle"' in page.text
     assert 'id="experienceMemoryToggle"' in page.text
     assert 'id="experiencePanel"' in page.text
+    assert 'id="loginScreen"' in page.text
+    assert 'id="loginUser"' in page.text
+    assert 'id="logoutButton"' in page.text
+    assert 'id="memoryManagerButton"' in page.text
+    assert 'id="memoryManagerModal"' in page.text
+    assert 'id="memoryUsagePanel"' in page.text
+    assert 'id="memoryFactForm"' in page.text
+    assert 'id="clearAllPersonalMemory"' in page.text
     assert 'id="clearConversationMemory"' in page.text
     assert 'id="memoryEntityChips"' in page.text
     assert "对话记忆：已关闭" in page.text
     assert 'id="webSourcesPanel"' in page.text
     assert "联网搜索：已开启" in page.text
-    assert "深圳科技大学003的高芳" in page.text
-    assert "上海科技大学002的赵强" in page.text
+    assert "北京人工智能大学001的王伟博" in page.text
+    assert "上海知识图谱大学002的李伟博" in page.text
+    assert "深圳科技大学003的高芳" not in page.text
+    assert "上海科技大学002的赵强" not in page.text
     assert "李明" not in page.text
-    assert '/static/app.js?v=20260827-1' in page.text
+    assert "本地演示密码已自动填充" in page.text
+    assert '/static/app.js?v=20260828-5' in page.text
     assert 'id="runComparePanel"' in page.text
     assert 'id="leftRunSelect"' in page.text
     assert 'id="rightRunSelect"' in page.text
@@ -59,6 +70,19 @@ def test_frontend_index_and_assets_are_served():
     assert "renderWebSources" in script.text
     assert "/observability/compare" in script.text
     assert "loadRunOptions" in script.text
+    assert 'fetch("/auth/login"' in script.text
+    assert 'fetch("/auth/me"' in script.text
+    assert "userStorageKey" in script.text
+    assert "defaultLoginPasswords" in script.text
+    assert "prefillLoginPassword" in script.text
+    assert "renderMemoryUsage" in script.text
+    assert "loadMemoryManager" in script.text
+    assert 'fetch("/memory/summary")' in script.text
+    assert 'fetch("/memory/export")' in script.text
+    assert "DELETE_ALL_PERSONAL_MEMORY" in script.text
+    assert "expected_revision" in script.text
+    assert "reviewMemoryFact" in script.text
+    assert "/review" in script.text
 
 
 def test_query_api_persists_web_search_switch():

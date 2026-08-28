@@ -14,6 +14,13 @@ def _id(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex}"
 
 
+def _login(client: TestClient, user_id: str, password: str) -> None:
+    response = client.post(
+        "/auth/login", json={"user_id": user_id, "password": password}
+    )
+    assert response.status_code == 200
+
+
 def _complete_ambiguous_first_turn(conversation_id: str, name: str = "张伟",
                                    entity_id: str = "person_zw_001") -> dict:
     run_id = _id("memory-first")
@@ -118,9 +125,8 @@ def test_clear_memory_removes_turns_and_entities():
     assert cleared.status_code == 200
     assert cleared.json()["deleted_turns"] == 1
     assert cleared.json()["deleted_entities"] == 1
-    after = client.get(f"/conversations/{conversation_id}/memory").json()
-    assert after["turn_count"] == 0
-    assert after["entities"] == []
+    after = client.get(f"/conversations/{conversation_id}/memory")
+    assert after.status_code == 404
 
 
 def test_server_generates_conversation_id_when_memory_is_enabled():
@@ -134,3 +140,46 @@ def test_server_generates_conversation_id_when_memory_is_enabled():
     assert response.json()["conversation_id"].startswith("conv-")
     completed = wait_for_run(client, run_id, {"COMPLETED"})
     assert completed["state"]["conversation_turn_count"] == 1
+
+
+def test_same_conversation_id_is_isolated_between_authenticated_users(monkeypatch):
+    monkeypatch.setenv("AUTH_REQUIRED", "true")
+    conversation_id = _id("shared-conversation")
+    researcher = TestClient(app)
+    analyst = TestClient(app)
+    _login(researcher, "user-researcher", "Research@123")
+    _login(analyst, "user-analyst", "Analyst@123")
+
+    researcher_run = _id("researcher-memory")
+    created = researcher.post("/queries", json={
+        "question": "查询人工智能产业链TOP事件。",
+        "thread_id": researcher_run,
+        "conversation_id": conversation_id,
+        "memory_enabled": True,
+    })
+    assert created.status_code == 202
+    wait_for_run(researcher, researcher_run, {"COMPLETED"})
+
+    assert analyst.get(f"/conversations/{conversation_id}/memory").status_code == 404
+    assert analyst.delete(f"/conversations/{conversation_id}/memory").status_code == 404
+    researcher_memory = researcher.get(f"/conversations/{conversation_id}/memory")
+    assert researcher_memory.status_code == 200
+    assert researcher_memory.json()["user_id"] == "user-researcher"
+    assert researcher_memory.json()["turn_count"] == 1
+
+    analyst_run = _id("analyst-memory")
+    created = analyst.post("/queries", json={
+        "question": "查询半导体产业链TOP事件。",
+        "thread_id": analyst_run,
+        "conversation_id": conversation_id,
+        "memory_enabled": True,
+    })
+    assert created.status_code == 202
+    wait_for_run(analyst, analyst_run, {"COMPLETED"})
+
+    analyst_memory = analyst.get(f"/conversations/{conversation_id}/memory").json()
+    researcher_memory = researcher.get(f"/conversations/{conversation_id}/memory").json()
+    assert analyst_memory["user_id"] == "user-analyst"
+    assert researcher_memory["user_id"] == "user-researcher"
+    assert analyst_memory["recent_turns"][0]["original_question"] == "查询半导体产业链TOP事件。"
+    assert researcher_memory["recent_turns"][0]["original_question"] == "查询人工智能产业链TOP事件。"

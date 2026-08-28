@@ -1,6 +1,6 @@
 """Supervisor/Planner Node：只拆解、调度与 replan，不调用业务 Tool。"""
-import logging
 import hashlib
+import logging
 
 from graph.state import GraphRAGState
 from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
@@ -8,8 +8,12 @@ from models.llm import ModelFactory
 from models.schemas import PlannedTask
 from services.observability import emit_event
 from services.telemetry import traced_span
-from skills.expert_report.spec import selected_capabilities as expert_report_capabilities
-from skills.industry_landscape.spec import selected_capabilities as industry_landscape_capabilities
+from skills.expert_report.spec import (
+    selected_capabilities as expert_report_capabilities,
+)
+from skills.industry_landscape.spec import (
+    selected_capabilities as industry_landscape_capabilities,
+)
 from skills.planning import CAPABILITY_BINDINGS, build_skill_plan
 from skills.registry import skill_registry
 
@@ -85,10 +89,17 @@ def supervisor_node(state: GraphRAGState) -> dict:
     else:
         with traced_span("supervisor.model.invoke", "model_operation", {
             "model.operation": "plan", "workflow.replan": is_replan,
+            "memory.fact_count": len(state.get("long_term_memory_used_fact_ids", [])),
         }):
-            plan = ModelFactory.structured_model().invoke_supervisor(
-                state["question"], state["resolved_entities"], state.get("validation_result"),
-                state.get("verification_result"), state.get("task_history", []))
+            model = ModelFactory.structured_model()
+            arguments = (
+                state["question"], state["resolved_entities"],
+                state.get("validation_result"), state.get("verification_result"),
+                state.get("task_history", []),
+            )
+            memory_context = state.get("long_term_memory_prompt")
+            plan = (model.invoke_supervisor(*arguments, memory_context=memory_context)
+                    if memory_context else model.invoke_supervisor(*arguments))
         plan = _guard_complex_plan(state["question"], plan, is_replan, state.get("web_search_enabled", True))
     normalized_tasks = []
     for task in plan.tasks:

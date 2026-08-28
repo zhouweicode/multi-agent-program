@@ -4,11 +4,28 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>科技知识图谱 · Multi-Agent GraphRAG</title>
-  <link rel="icon" href="/static/favicon.svg?v=20260827-1" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/styles.css?v=20260827-1">
-  <link rel="stylesheet" href="/static/layout-fix.css?v=20260827-1">
+  <link rel="icon" href="/static/favicon.svg?v=20260827-2" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css?v=20260827-2">
+  <link rel="stylesheet" href="/static/layout-fix.css?v=20260828-5">
 </head>
-<body>
+<body class="auth-pending">
+  <section id="loginScreen" class="login-screen" aria-labelledby="loginTitle">
+    <div class="login-card">
+      <div class="login-brand"><span class="brand-mark">KG</span><span>GraphRAG Studio</span></div>
+      <span class="login-eyebrow">MULTI-USER ACCESS</span>
+      <h1 id="loginTitle">选择用户并登录</h1>
+      <p>每个账号拥有独立的浏览器会话标识，后续可以据此隔离长期记忆与个人偏好。</p>
+      <form id="loginForm">
+        <label for="loginUser">登录用户</label>
+        <select id="loginUser" required><option value="">正在加载用户…</option></select>
+        <label for="loginPassword">密码</label>
+        <input id="loginPassword" type="password" maxlength="256" autocomplete="current-password" placeholder="请输入该用户的密码" required>
+        <button id="loginButton" type="submit">进入系统 <span>→</span></button>
+        <p id="loginError" class="login-error hidden" role="alert"></p>
+      </form>
+      <small class="login-hint">本地演示密码已自动填充，选择用户后可直接进入系统。</small>
+    </div>
+  </section>
   <div class="ambient ambient-one"></div>
   <div class="ambient ambient-two"></div>
   <header class="topbar">
@@ -16,7 +33,14 @@
       <span class="brand-mark">KG</span>
       <span><strong>GraphRAG Studio</strong><small>Multi-Agent Knowledge Intelligence</small></span>
     </a>
-    <div class="system-status"><span id="healthDot" class="status-dot"></span><span id="healthText">正在连接系统</span></div>
+    <div class="topbar-actions">
+      <div class="system-status"><span id="healthDot" class="status-dot"></span><span id="healthText">正在连接系统</span></div>
+      <div id="userMenu" class="user-menu hidden">
+        <button id="memoryManagerButton" class="memory-manager-open" type="button">记忆管理</button>
+        <div><strong id="currentUserName">未登录</strong><small id="currentUsername"></small></div>
+        <button id="logoutButton" type="button">退出</button>
+      </div>
+    </div>
   </header>
 
   <main class="shell">
@@ -30,24 +54,24 @@
       <form id="queryForm">
         <label for="question">向知识图谱提问</label>
         <div class="query-row">
-          <textarea id="question" rows="3" placeholder="例如：综合分析深圳科技大学003的高芳和上海科技大学002的赵强的学术、职业和企业合作关系。" required></textarea>
+          <textarea id="question" rows="3" placeholder="例如：综合分析北京人工智能大学001的王伟博和上海知识图谱大学002的李伟博的学术、职业和企业合作关系。" required></textarea>
           <button id="submitBtn" type="submit"><span id="submitLabel">开始分析</span><span id="submitIcon" class="arrow">→</span></button>
         </div>
         <div class="form-meta">
           <div class="examples">
             <span>试试：</span>
-            <button type="button" data-example="深圳科技大学003的高芳发表过哪些论文？">论文成果</button>
-            <button type="button" data-example="请生成深圳科技大学003的高芳的完整专家报告。">专家报告</button>
+            <button type="button" data-example="北京人工智能大学001的王伟博发表过哪些论文？">论文成果</button>
+            <button type="button" data-example="请生成北京人工智能大学001的王伟博的完整专家报告。">专家报告</button>
             <button type="button" data-example="请生成人工智能产业全景报告。">产业全景</button>
-            <button type="button" data-example="深圳科技大学003的高芳有哪些专利？">专利成果</button>
-            <button type="button" data-example="综合分析深圳科技大学003的高芳的教育经历、职业履历、论文、项目、专利和企业任职，形成跨领域专家画像。">跨域画像</button>
-            <button type="button" data-example="对比深圳科技大学003的高芳和上海科技大学002的赵强在论文、科研项目、专利及企业任职方面的成果与差异。">成果对比</button>
-            <button type="button" data-example="综合分析深圳科技大学003的高芳和上海科技大学002的赵强的学术、职业和企业合作关系。">综合合作</button>
-            <button type="button" data-example="找出深圳科技大学003的高芳和上海科技大学002的赵强共同参与的论文、项目和专利，并汇总可核验的合作证据。">共同成果</button>
-            <button type="button" data-example="分析深圳科技大学003的高芳和上海科技大学002的赵强的企业任职、关联企业、企业项目与专利，并追踪相关产业链节点。">产企关联</button>
-            <button type="button" data-example="分析深圳科技大学003的高芳与上海科技大学002的赵强之间的多跳间接关系和路径强度。">间接关系</button>
-            <button type="button" data-example="判断深圳科技大学003的高芳和上海科技大学002的赵强是不是长期稳定的核心科研合作伙伴。">合作验证</button>
-            <button type="button" data-example="基于论文、项目、专利、任职和图谱路径证据，验证深圳科技大学003的高芳与上海科技大学002的赵强是否存在稳定的产学研合作关系，并说明证据不足之处。">综合验证</button>
+            <button type="button" data-example="北京人工智能大学001的王伟博有哪些专利？">专利成果</button>
+            <button type="button" data-example="综合分析北京人工智能大学001的王伟博的教育经历、职业履历、论文、项目、专利和企业任职，形成跨领域专家画像。">跨域画像</button>
+            <button type="button" data-example="对比北京人工智能大学001的王伟博和上海知识图谱大学002的李伟博在论文、科研项目、专利及企业任职方面的成果与差异。">成果对比</button>
+            <button type="button" data-example="综合分析北京人工智能大学001的王伟博和上海知识图谱大学002的李伟博的学术、职业和企业合作关系。">综合合作</button>
+            <button type="button" data-example="核对北京人工智能大学001的王伟博和上海知识图谱大学002的李伟博共同参与的论文、项目和专利，汇总可核验的合作证据，并对未检索到的成果类型明确说明证据不足。">共同成果</button>
+            <button type="button" data-example="分析北京人工智能大学001的王伟博和上海知识图谱大学002的李伟博的企业任职、关联企业、企业项目与专利，并追踪相关产业链节点。">产企关联</button>
+            <button type="button" data-example="分析北京人工智能大学001的王伟博与上海知识图谱大学002的李伟博之间的多跳间接关系和路径强度。">间接关系</button>
+            <button type="button" data-example="判断北京人工智能大学001的王伟博和上海知识图谱大学002的李伟博是不是长期稳定的核心科研合作伙伴。">合作验证</button>
+            <button type="button" data-example="基于论文、项目、专利、任职和图谱路径证据，验证北京人工智能大学001的王伟博与上海知识图谱大学002的李伟博是否存在稳定的产学研合作关系，并说明证据不足之处。">综合验证</button>
             <button type="button" data-example="联网查证 Neo4j GraphRAG 当前支持的检索方式，列出官网等公开来源，并说明哪些内容还需要进一步验证。">联网研究</button>
           </div>
           <div class="query-options">
@@ -132,6 +156,13 @@
             <div id="experienceMetrics" class="experience-metrics"></div>
             <div id="experienceStrategy" class="experience-strategy"></div>
           </section>
+          <section id="memoryUsagePanel" class="memory-usage-panel hidden" aria-labelledby="memoryUsageTitle">
+            <div class="experience-heading">
+              <div><span class="section-index">LONG-TERM</span><h3 id="memoryUsageTitle">本轮使用的记忆</h3></div>
+              <span id="memoryUsageStatus" class="run-badge">MISS</span>
+            </div>
+            <div id="memoryUsageFacts" class="memory-usage-facts"></div>
+          </section>
           <section id="webSourcesPanel" class="web-sources hidden" aria-labelledby="webSourcesTitle">
             <div class="web-sources-heading">
               <h3 id="webSourcesTitle">联网参考来源</h3>
@@ -191,7 +222,53 @@
       <details class="raw-event"><summary>查看原始事件 JSON</summary><pre id="eventRaw">{}</pre></details>
     </div>
   </dialog>
+  <dialog id="memoryManagerModal" class="event-modal memory-manager-modal">
+    <div class="event-modal-card memory-manager-card">
+      <div class="event-modal-header">
+        <div><span class="section-index">PERSONAL MEMORY</span><h2>记忆管理</h2></div>
+        <button id="closeMemoryManager" type="button" aria-label="关闭记忆管理">×</button>
+      </div>
+      <p class="memory-manager-description">长期记忆属于当前登录用户，不是知识图谱事实。可查看来源、置信度、有效期并手动管理。</p>
+      <div id="memorySummaryCards" class="memory-summary-cards"></div>
+      <div class="memory-manager-toolbar">
+        <input id="memorySearchInput" type="search" maxlength="500" placeholder="搜索记忆内容">
+        <select id="memoryCategoryFilter" aria-label="按分类筛选">
+          <option value="">全部分类</option>
+          <option value="preference">偏好</option><option value="focus">长期关注</option>
+          <option value="correction">用户修正</option><option value="constraint">稳定约束</option>
+          <option value="output_format">输出格式</option><option value="context">其他上下文</option>
+        </select>
+        <button id="searchMemoryFacts" type="button">搜索</button>
+        <button id="addMemoryFact" class="primary-action" type="button">新增记忆</button>
+        <button id="exportMemory" type="button">导出 JSON</button>
+      </div>
+      <form id="memoryFactForm" class="memory-fact-form hidden">
+        <input id="memoryFactId" type="hidden">
+        <label>记忆内容<textarea id="memoryFactContent" maxlength="500" rows="3" required></textarea></label>
+        <div class="memory-form-row">
+          <label>分类<select id="memoryFactCategory" required>
+            <option value="preference">偏好</option><option value="focus">长期关注</option>
+            <option value="correction">用户修正</option><option value="constraint">稳定约束</option>
+            <option value="output_format">输出格式</option><option value="context">其他上下文</option>
+          </select></label>
+          <label>置信度<input id="memoryFactConfidence" type="number" min="0" max="1" step="0.01" value="1"></label>
+          <label>有效期<input id="memoryFactExpiry" type="datetime-local"></label>
+        </div>
+        <div class="memory-form-actions">
+          <button id="saveMemoryFact" class="primary-action" type="submit">保存</button>
+          <button id="cancelMemoryEdit" type="button">取消</button>
+        </div>
+        <p id="memoryFormError" class="login-error hidden" role="alert"></p>
+      </form>
+      <div id="memoryFactList" class="memory-fact-list"></div>
+      <div id="memoryEmpty" class="compare-empty hidden">当前筛选条件下没有长期记忆。</div>
+      <div class="memory-danger-zone">
+        <div><strong>清除全部个人记忆</strong><small>同时清除长期事实、全部会话记忆、私有查询经验及待处理任务；不会修改知识图谱。</small></div>
+        <button id="clearAllPersonalMemory" type="button">全部清除</button>
+      </div>
+    </div>
+  </dialog>
   <footer>GraphRAG Studio · 数据库返回什么，答案就只说什么</footer>
-  <script src="/static/app.js?v=20260827-1" defer></script>
+  <script src="/static/app.js?v=20260828-5" defer></script>
 </body>
 </html>

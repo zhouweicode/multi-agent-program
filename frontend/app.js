@@ -1,11 +1,21 @@
 const $ = (selector) => document.querySelector(selector);
+const defaultLoginPasswords = {
+  "user-admin": "Admin@123",
+  "user-researcher": "Research@123",
+  "user-analyst": "Analyst@123",
+};
 const state = {
   threadId: null, cursor: 0, events: [], eventSource: null, streaming: false,
   graphState: {}, running: false, stopping: false, webSearchEnabled: true,
-  conversationId: sessionStorage.getItem("graphrag.conversationId"),
-  memoryEnabled: sessionStorage.getItem("graphrag.memoryEnabled") === "true",
-  experienceMemoryEnabled: sessionStorage.getItem("graphrag.experienceMemoryEnabled") !== "false",
+  currentUser: null, conversationId: null, memoryEnabled: false,
+  experienceMemoryEnabled: true,
   memoryEntities: [], memoryTurnCount: 0,
+  memoryFacts: [], memorySummary: null, editingMemoryFactId: null,
+};
+
+const memoryCategoryLabels = {
+  preference: "偏好", focus: "长期关注", correction: "用户修正",
+  constraint: "稳定约束", output_format: "输出格式", context: "其他上下文",
 };
 
 const eventInfo = {
@@ -20,6 +30,10 @@ const eventInfo = {
   EXPERIENCE_ROUTE_COMPARED: ["experience", "历史路由与当前路由已比较"],
   EXPERIENCE_WRITTEN: ["experience", "本轮执行经验已沉淀"],
   EXPERIENCE_WRITEBACK_SKIPPED: ["experience", "本轮经验写回已跳过"],
+  LONG_TERM_MEMORY_RECALLED: ["memory", "已召回相关长期记忆"],
+  LONG_TERM_MEMORY_RECALL_FAILED_OPEN: ["memory", "长期记忆召回失败，已降级继续"],
+  LONG_TERM_MEMORY_UPDATE_QUEUED: ["memory", "长期记忆抽取任务已进入队列"],
+  LONG_TERM_MEMORY_EXTRACTED: ["memory", "可复用长期记忆已完成抽取"],
   ROUTER_COMPLETED: ["router", "Router 完成结构化路由"],
   SKILL_SELECTED: ["skill", "已选择运行时 Skill"],
   SKILL_PLAN_CREATED: ["supervisor", "Skill 能力已展开为领域任务"],
@@ -52,6 +66,79 @@ const nodeLabels = {
 
 function newThreadId() { return `ui-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
 function newConversationId() { return `conv-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`; }
+function prefillLoginPassword() {
+  $("#loginPassword").value = defaultLoginPasswords[$("#loginUser").value] || "";
+}
+function userStorageKey(name) { return `graphrag.${state.currentUser?.user_id || "anonymous"}.${name}`; }
+function loadUserSessionState() {
+  state.conversationId = sessionStorage.getItem(userStorageKey("conversationId"));
+  state.memoryEnabled = sessionStorage.getItem(userStorageKey("memoryEnabled")) === "true";
+  state.experienceMemoryEnabled = sessionStorage.getItem(userStorageKey("experienceMemoryEnabled")) !== "false";
+  state.memoryEntities = [];
+  state.memoryTurnCount = 0;
+}
+
+function showLogin(message = "") {
+  stopEventStream();
+  if ($("#memoryManagerModal")?.open) $("#memoryManagerModal").close();
+  state.currentUser = null;
+  document.body.classList.add("auth-pending");
+  $("#loginScreen").classList.remove("hidden");
+  $("#userMenu").classList.add("hidden");
+  $("#loginError").textContent = message;
+  $("#loginError").classList.toggle("hidden", !message);
+  prefillLoginPassword();
+}
+
+async function showApplication(user) {
+  state.currentUser = user;
+  loadUserSessionState();
+  $("#currentUserName").textContent = user.display_name;
+  $("#currentUsername").textContent = `@${user.username}`;
+  $("#userMenu").classList.remove("hidden");
+  $("#loginScreen").classList.add("hidden");
+  document.body.classList.remove("auth-pending");
+  renderWebSearchToggle();
+  renderExperienceMemoryToggle();
+  renderConversationMemory();
+  if (state.memoryEnabled) await refreshConversationMemory();
+  await loadRunOptions();
+}
+
+async function loadLoginUsers() {
+  const select = $("#loginUser");
+  try {
+    const response = await fetch("/auth/users");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const payload = await response.json();
+    select.innerHTML = "";
+    (payload.users || []).forEach(user => {
+      const option = document.createElement("option");
+      option.value = user.user_id;
+      option.textContent = `${user.display_name}（${user.username}）`;
+      select.appendChild(option);
+    });
+    select.disabled = !payload.users?.length;
+    prefillLoginPassword();
+  } catch (error) {
+    select.innerHTML = '<option value="">用户列表加载失败</option>';
+    select.disabled = true;
+    showLogin(`无法读取用户列表：${error.message}`);
+  }
+}
+
+async function initializeAuth() {
+  await loadLoginUsers();
+  try {
+    const response = await fetch("/auth/me");
+    if (!response.ok) { showLogin(); return; }
+    const payload = await response.json();
+    await showApplication(payload.user);
+  } catch (error) {
+    showLogin(`连接认证服务失败：${error.message}`);
+  }
+}
+
 function setRunStatus(text, running = false) { const el = $("#runStatus"); el.textContent = text; el.classList.toggle("running", running); }
 function setSubmitMode(mode) {
   const button = $("#submitBtn");
@@ -84,7 +171,7 @@ function renderExperienceMemoryToggle() {
 function ensureConversationId() {
   if (!state.conversationId) {
     state.conversationId = newConversationId();
-    sessionStorage.setItem("graphrag.conversationId", state.conversationId);
+    sessionStorage.setItem(userStorageKey("conversationId"), state.conversationId);
   }
   return state.conversationId;
 }
@@ -131,6 +218,8 @@ function resetUI() {
   $("#workspace").classList.remove("hidden"); $("#selectionPanel").classList.add("hidden"); $("#answerPanel").classList.add("hidden");
   $("#timeline").innerHTML = '<div class="empty-state"><span class="pulse-ring"></span>等待执行事件…</div>';
   $("#stateJson").textContent = "{}"; $("#eventCount").textContent = "0 events";
+  $("#memoryUsagePanel").classList.add("hidden");
+  $("#memoryUsageFacts").innerHTML = "";
   document.querySelectorAll(".flow-node,.agent-cluster span").forEach(el => el.classList.remove("active", "done", "skipped"));
   setRunStatus("执行中", true);
 }
@@ -319,6 +408,47 @@ function renderExperience(graphState) {
   panel.classList.remove("hidden");
 }
 
+function formatMemoryDate(value, empty = "长期有效") {
+  if (!value) return empty;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", {hour12:false});
+}
+
+function renderMemoryUsage(graphState) {
+  const panel = $("#memoryUsagePanel");
+  const root = $("#memoryUsageFacts");
+  root.innerHTML = "";
+  const status = graphState.long_term_memory_recall_status;
+  const facts = graphState.long_term_memory_facts || [];
+  if (!status || status === "DISABLED" || status === "SKIPPED") {
+    panel.classList.add("hidden");
+    return;
+  }
+  const applied = new Set(graphState.long_term_memory_applied_fact_ids || []);
+  $("#memoryUsageStatus").textContent = `${status} · ${facts.length}`;
+  if (!facts.length) {
+    const empty = document.createElement("p");
+    empty.className = "memory-usage-empty";
+    empty.textContent = status === "FAILED_OPEN"
+      ? "记忆检索本轮已安全降级，不影响知识库查询。"
+      : "本轮未召回与问题相关的长期记忆。";
+    root.appendChild(empty);
+  }
+  facts.forEach(fact => {
+    const card = document.createElement("article"); card.className = "memory-usage-fact";
+    const heading = document.createElement("div"); heading.className = "memory-fact-heading";
+    const category = document.createElement("span"); category.className = "memory-category";
+    category.textContent = memoryCategoryLabels[fact.category] || fact.category || "记忆";
+    const use = document.createElement("span"); use.className = applied.has(fact.fact_id) ? "memory-applied" : "memory-recalled";
+    use.textContent = applied.has(fact.fact_id) ? "已应用到答案" : "已召回";
+    const content = document.createElement("p"); content.textContent = fact.content || "";
+    const meta = document.createElement("small");
+    meta.textContent = `置信度 ${(Number(fact.confidence || 0) * 100).toFixed(0)}% · 来源 ${fact.source_conversation_id || fact.source_run_id || "未知"}`;
+    heading.append(category, use); card.append(heading, content, meta); root.appendChild(card);
+  });
+  panel.classList.remove("hidden");
+}
+
 function renderResult(payload) {
   state.graphState = payload.state || {}; $("#stateJson").textContent = JSON.stringify(state.graphState, null, 2);
   if (state.graphState.report_draft) renderExpertReport(state.graphState.report_draft);
@@ -329,6 +459,7 @@ function renderResult(payload) {
   Object.entries(state.graphState.resolved_entities || {}).forEach(([name, id]) => { const chip = document.createElement("span"); chip.textContent = `${name} · ${id}`; chips.appendChild(chip); });
   renderWebSources(state.graphState);
   renderExperience(state.graphState);
+  renderMemoryUsage(state.graphState);
   if (state.memoryEnabled) {
     state.memoryEntities = state.graphState.conversation_entities || state.memoryEntities;
     state.memoryTurnCount = Number(state.graphState.conversation_turn_count || state.memoryTurnCount);
@@ -476,13 +607,185 @@ async function compareSelectedRuns() {
   } finally { $("#compareRuns").disabled = false; }
 }
 
+function renderMemorySummary(summary) {
+  state.memorySummary = summary;
+  const root = $("#memorySummaryCards"); root.innerHTML = "";
+  const specs = [
+    ["长期事实", summary.fact_count || 0],
+    ["当前有效", summary.active_fact_count || 0],
+    ["待复核", summary.review_due_count || 0],
+    ["累计召回", summary.total_recall_count || 0],
+    ["实际应用", summary.total_application_count || 0],
+    ["最近更新", formatMemoryDate(summary.last_updated_at, "暂无")],
+  ];
+  specs.forEach(([label, value]) => {
+    const card = document.createElement("div");
+    const name = document.createElement("span"); name.textContent = label;
+    const content = document.createElement("strong"); content.textContent = String(value);
+    card.append(name, content); root.appendChild(card);
+  });
+}
+
+function renderMemoryFacts(facts) {
+  state.memoryFacts = facts;
+  const root = $("#memoryFactList"); root.innerHTML = "";
+  $("#memoryEmpty").classList.toggle("hidden", Boolean(facts.length));
+  facts.forEach(fact => {
+    const card = document.createElement("article");
+    card.className = `memory-fact-card${fact.expired ? " expired" : ""}`;
+    const heading = document.createElement("div"); heading.className = "memory-fact-heading";
+    const category = document.createElement("span"); category.className = "memory-category";
+    category.textContent = memoryCategoryLabels[fact.category] || fact.category || "其他上下文";
+    const status = document.createElement("span"); status.className = fact.expired ? "memory-expired" : "memory-active";
+    status.textContent = fact.expired ? "已过期" : "有效";
+    const content = document.createElement("p"); content.textContent = fact.content || "";
+    const meta = document.createElement("small");
+    meta.textContent = `置信度 ${(Number(fact.confidence || 0) * 100).toFixed(0)}% · 召回 ${fact.recall_count || 0} 次 · 应用 ${fact.application_count || 0} 次 · 最近召回 ${formatMemoryDate(fact.last_recalled_at, "尚未召回")} · 有效期 ${formatMemoryDate(fact.expected_valid_until)} · 来源 ${fact.source_conversation_id || fact.source_run_id || "未知"} · revision ${fact.revision || 1}`;
+    const actions = document.createElement("div"); actions.className = "memory-fact-actions";
+    const edit = document.createElement("button"); edit.type = "button"; edit.textContent = "编辑";
+    edit.addEventListener("click", () => openMemoryEditor(fact));
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "删除";
+    remove.addEventListener("click", () => deleteMemoryFact(fact));
+    if (fact.review_status === "due") {
+      const renew = document.createElement("button"); renew.type = "button"; renew.textContent = "续期 90 天";
+      renew.addEventListener("click", () => reviewMemoryFact(fact, "renew"));
+      const archive = document.createElement("button"); archive.type = "button"; archive.className = "danger"; archive.textContent = "归档";
+      archive.addEventListener("click", () => reviewMemoryFact(fact, "archive"));
+      actions.append(renew, archive);
+    }
+    heading.append(category, status); actions.append(edit, remove); card.append(heading, content, meta, actions); root.appendChild(card);
+  });
+}
+
+async function loadMemoryManager() {
+  const query = $("#memorySearchInput").value.trim();
+  const category = $("#memoryCategoryFilter").value;
+  const params = new URLSearchParams({limit: "100"});
+  if (query) params.set("query", query);
+  if (category) params.set("category", category);
+  $("#memoryEmpty").textContent = "正在读取个人记忆…";
+  $("#memoryEmpty").classList.remove("hidden");
+  try {
+    const [summaryResponse, factsResponse] = await Promise.all([
+      fetch("/memory/summary"), fetch(`/memory/facts?${params}`),
+    ]);
+    if (!summaryResponse.ok || !factsResponse.ok) throw new Error(`HTTP ${summaryResponse.ok ? factsResponse.status : summaryResponse.status}`);
+    renderMemorySummary(await summaryResponse.json());
+    renderMemoryFacts((await factsResponse.json()).facts || []);
+    $("#memoryEmpty").textContent = "当前筛选条件下没有长期记忆。";
+  } catch (error) {
+    $("#memoryEmpty").textContent = `记忆加载失败：${error.message}`;
+    $("#memoryEmpty").classList.remove("hidden");
+  }
+}
+
+function openMemoryEditor(fact = null) {
+  state.editingMemoryFactId = fact?.fact_id || null;
+  $("#memoryFactId").value = state.editingMemoryFactId || "";
+  $("#memoryFactContent").value = fact?.content || "";
+  $("#memoryFactCategory").value = fact?.category || "preference";
+  $("#memoryFactConfidence").value = fact?.confidence ?? 1;
+  const expiry = fact?.expected_valid_until ? new Date(fact.expected_valid_until) : null;
+  $("#memoryFactExpiry").value = expiry && !Number.isNaN(expiry.getTime())
+    ? new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
+  $("#memoryFormError").classList.add("hidden");
+  $("#memoryFactForm").classList.remove("hidden");
+  $("#memoryFactContent").focus();
+}
+
+function closeMemoryEditor() {
+  state.editingMemoryFactId = null;
+  $("#memoryFactForm").reset();
+  $("#memoryFactConfidence").value = "1";
+  $("#memoryFactForm").classList.add("hidden");
+  $("#memoryFormError").classList.add("hidden");
+}
+
+async function saveMemoryFact(event) {
+  event.preventDefault();
+  const factId = state.editingMemoryFactId;
+  const expiry = $("#memoryFactExpiry").value;
+  const body = {
+    content: $("#memoryFactContent").value.trim(),
+    category: $("#memoryFactCategory").value,
+    confidence: Number($("#memoryFactConfidence").value),
+    expected_valid_until: expiry ? new Date(expiry).toISOString() : null,
+  };
+  if (factId) {
+    const current = state.memoryFacts.find(fact => fact.fact_id === factId);
+    body.expected_revision = Number(current?.revision || 1);
+  }
+  const button = $("#saveMemoryFact"); button.disabled = true;
+  try {
+    const response = await fetch(factId ? `/memory/facts/${encodeURIComponent(factId)}` : "/memory/facts", {
+      method: factId ? "PATCH" : "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    closeMemoryEditor(); await loadMemoryManager();
+  } catch (error) {
+    $("#memoryFormError").textContent = error.message;
+    $("#memoryFormError").classList.remove("hidden");
+  } finally { button.disabled = false; }
+}
+
+async function reviewMemoryFact(fact, action) {
+  const label = action === "renew" ? "续期 90 天" : "归档";
+  if (!window.confirm(`确认将这条记忆${label}吗？`)) return;
+  const response = await fetch(`/memory/facts/${encodeURIComponent(fact.fact_id)}/review`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action, expected_revision: Number(fact.revision), review_days: 90}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { alert(`复核失败：${payload.detail || `HTTP ${response.status}`}`); return; }
+  await loadMemoryManager();
+}
+
+async function deleteMemoryFact(fact) {
+  if (!window.confirm(`确认删除这条${memoryCategoryLabels[fact.category] || ""}记忆吗？`)) return;
+  const response = await fetch(`/memory/facts/${encodeURIComponent(fact.fact_id)}?expected_revision=${encodeURIComponent(fact.revision)}`, {method: "DELETE"});
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { alert(`删除失败：${payload.detail || `HTTP ${response.status}`}`); return; }
+  if (state.editingMemoryFactId === fact.fact_id) closeMemoryEditor();
+  await loadMemoryManager();
+}
+
+async function exportMemory() {
+  const response = await fetch("/memory/export");
+  if (!response.ok) { alert(`导出失败：HTTP ${response.status}`); return; }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a"); link.href = url;
+  link.download = `user-memory-${state.currentUser?.user_id || "export"}.json`;
+  document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
+}
+
+async function clearAllPersonalMemory() {
+  if (!window.confirm("此操作会清除当前用户的长期事实、全部会话记忆、私有查询经验和待处理任务。确认继续吗？")) return;
+  const confirmation = window.prompt("请输入 DELETE_ALL_PERSONAL_MEMORY 完成二次确认：", "");
+  if (confirmation !== "DELETE_ALL_PERSONAL_MEMORY") { alert("确认文本不匹配，未执行清除。"); return; }
+  const response = await fetch("/memory", {
+    method: "DELETE", headers: {"Content-Type": "application/json"}, body: JSON.stringify({confirmation}),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) { alert(`清除失败：${payload.detail || `HTTP ${response.status}`}`); return; }
+  state.conversationId = null; state.memoryEntities = []; state.memoryTurnCount = 0;
+  sessionStorage.removeItem(userStorageKey("conversationId"));
+  renderConversationMemory(); closeMemoryEditor(); await loadMemoryManager();
+  alert(`个人记忆已清除：长期事实 ${payload.deleted_facts || 0} 条，会话 ${payload.deleted_conversations || 0} 个。`);
+}
+
 async function handleResponse(response) {
-  if (!response.ok) { const error = await response.json().catch(() => ({})); throw new Error(error.detail || `HTTP ${response.status}`); }
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    if (response.status === 401) showLogin("登录已失效，请重新登录");
+    throw new Error(error.detail || `HTTP ${response.status}`);
+  }
   const payload = await response.json();
   state.threadId = payload.run_id || payload.thread_id || state.threadId;
   if (payload.conversation_id) {
     state.conversationId = payload.conversation_id;
-    sessionStorage.setItem("graphrag.conversationId", state.conversationId);
+    sessionStorage.setItem(userStorageKey("conversationId"), state.conversationId);
   }
   if (payload.status === "RUNNING") { setSubmitMode("running"); setRunStatus("执行中", true); startEventStream(); }
   else if (payload.status === "NEED_USER_SELECTION") { showCandidates(payload.interrupt); finishRun("等待实体选择"); }
@@ -529,13 +832,13 @@ $("#webSearchToggle").addEventListener("click", () => {
 $("#experienceMemoryToggle").addEventListener("click", () => {
   if (state.running) return;
   state.experienceMemoryEnabled = !state.experienceMemoryEnabled;
-  sessionStorage.setItem("graphrag.experienceMemoryEnabled", String(state.experienceMemoryEnabled));
+  sessionStorage.setItem(userStorageKey("experienceMemoryEnabled"), String(state.experienceMemoryEnabled));
   renderExperienceMemoryToggle();
 });
 $("#conversationMemoryToggle").addEventListener("click", async () => {
   if (state.running) return;
   state.memoryEnabled = !state.memoryEnabled;
-  sessionStorage.setItem("graphrag.memoryEnabled", String(state.memoryEnabled));
+  sessionStorage.setItem(userStorageKey("memoryEnabled"), String(state.memoryEnabled));
   if (state.memoryEnabled) ensureConversationId();
   await refreshConversationMemory();
 });
@@ -545,7 +848,7 @@ $("#clearConversationMemory").addEventListener("click", async () => {
   const response = await fetch(`/conversations/${encodeURIComponent(state.conversationId)}/memory`, {method:"DELETE"});
   if (!response.ok) { const payload = await response.json().catch(() => ({})); alert(`清除失败：${payload.detail || `HTTP ${response.status}`}`); return; }
   state.conversationId = newConversationId();
-  sessionStorage.setItem("graphrag.conversationId", state.conversationId);
+  sessionStorage.setItem(userStorageKey("conversationId"), state.conversationId);
   state.memoryEntities = []; state.memoryTurnCount = 0;
   renderConversationMemory();
   alert("当前对话记忆已清空，后续问题将从新的会话开始。");
@@ -555,10 +858,52 @@ $("#closeEventModal").addEventListener("click", () => $("#eventModal").close());
 $("#eventModal").addEventListener("click", event => { if (event.target === $("#eventModal")) $("#eventModal").close(); });
 $("#refreshRuns").addEventListener("click", loadRunOptions);
 $("#compareRuns").addEventListener("click", compareSelectedRuns);
+$("#memoryManagerButton").addEventListener("click", async () => {
+  $("#memoryManagerModal").showModal();
+  await loadMemoryManager();
+});
+$("#closeMemoryManager").addEventListener("click", () => $("#memoryManagerModal").close());
+$("#memoryManagerModal").addEventListener("click", event => { if (event.target === $("#memoryManagerModal")) $("#memoryManagerModal").close(); });
+$("#searchMemoryFacts").addEventListener("click", loadMemoryManager);
+$("#memorySearchInput").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); loadMemoryManager(); } });
+$("#memoryCategoryFilter").addEventListener("change", loadMemoryManager);
+$("#addMemoryFact").addEventListener("click", () => openMemoryEditor());
+$("#cancelMemoryEdit").addEventListener("click", closeMemoryEditor);
+$("#memoryFactForm").addEventListener("submit", saveMemoryFact);
+$("#exportMemory").addEventListener("click", exportMemory);
+$("#clearAllPersonalMemory").addEventListener("click", clearAllPersonalMemory);
+$("#loginUser").addEventListener("change", prefillLoginPassword);
+
+$("#loginForm").addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = $("#loginButton");
+  button.disabled = true;
+  $("#loginError").classList.add("hidden");
+  try {
+    const response = await fetch("/auth/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({user_id: $("#loginUser").value, password: $("#loginPassword").value}),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+    $("#loginPassword").value = "";
+    await showApplication(payload.user);
+  } catch (error) {
+    showLogin(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$("#logoutButton").addEventListener("click", async () => {
+  if (state.running && !window.confirm("当前分析仍在执行，确认退出登录吗？")) return;
+  stopEventStream();
+  try { await fetch("/auth/logout", {method: "POST"}); } catch (error) { console.warn("退出请求失败", error); }
+  state.threadId = null;
+  state.graphState = {};
+  showLogin();
+});
 
 fetch("/health").then(response => response.json()).then(payload => { $("#healthDot").classList.add("online"); $("#healthText").textContent = `Stage ${payload.stage} · ${payload.embedding_provider} · ${payload.entity_backend}`; }).catch(() => { $("#healthText").textContent = "系统离线"; });
-renderWebSearchToggle();
-renderExperienceMemoryToggle();
-renderConversationMemory();
-if (state.memoryEnabled) refreshConversationMemory();
-loadRunOptions();
+initializeAuth();

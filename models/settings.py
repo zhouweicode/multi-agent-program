@@ -37,6 +37,13 @@ class Settings:
     model_request_timeout: float = 60
     model_max_retries: int = 1
     checkpoint_db_path: str = ".runtime/checkpoints.sqlite"
+    auth_db_path: str = ".runtime/users.sqlite"
+    auth_required: bool = True
+    auth_session_ttl_seconds: int = 86400
+    auth_cookie_secure: bool = False
+    auth_admin_password: str = "Admin@123"
+    auth_researcher_password: str = "Research@123"
+    auth_analyst_password: str = "Analyst@123"
     entity_backend: str = "milvus"
     achievement_backend: str = "mock"
     graph_backend: str = "mock"
@@ -80,8 +87,26 @@ class Settings:
     web_search_timeout: float = 15
     web_search_max_results: int = 5
     observability_db_path: str = ".runtime/observability.sqlite"
+    memory_backend: str = "sqlite"
+    memory_mysql_database: str = "gkx_runtime"
     conversation_memory_db_path: str = ".runtime/conversation-memory.sqlite"
     query_experience_db_path: str = ".runtime/query-experience.sqlite"
+    long_term_memory_db_path: str = ".runtime/long-term-memory.sqlite"
+    memory_extraction_enabled: bool = True
+    memory_worker_poll_seconds: float = 1.0
+    memory_worker_batch_size: int = 10
+    memory_worker_lease_seconds: int = 60
+    memory_worker_max_attempts: int = 3
+    memory_fact_confidence_threshold: float = 0.85
+    memory_fact_max_per_scope: int = 100
+    memory_fact_review_days: int = 90
+    memory_fact_similarity_threshold: float = 0.86
+    memory_recall_top_k: int = 5
+    memory_recall_candidate_limit: int = 100
+    memory_recall_token_budget: int = 1000
+    memory_milvus_uri: str = ".runtime/user-memory-milvus.db"
+    memory_milvus_collection: str = "user_memory_facts_v1"
+    memory_retrieval_backend: str = "mysql"
     query_experience_mode: str = "shadow"
     query_experience_scope_id: str = "local"
     query_experience_candidate_limit: int = 5
@@ -122,12 +147,22 @@ class Settings:
             cost_currency=str(env("COST_CURRENCY", self.model_cost_currency)),
         )
 
+    def validate_memory_settings(self) -> None:
+        if self.memory_milvus_collection == self.milvus_collection:
+            raise ValueError(
+                "MEMORY_MILVUS_COLLECTION 禁止与 MILVUS_COLLECTION 共用"
+            )
+        if self.memory_retrieval_backend not in {"mysql", "hybrid", "milvus"}:
+            raise ValueError(
+                "MEMORY_RETRIEVAL_BACKEND 仅支持 mysql、hybrid 或 milvus"
+            )
+
     @classmethod
     def from_env(cls) -> "Settings":
         api_key = os.getenv("MODEL_API_KEY") or os.getenv("ZHIPUAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         configured_provider = os.getenv("MODEL_PROVIDER", "auto").lower()
         provider = "openai" if configured_provider == "auto" and api_key else ("mock" if configured_provider == "auto" else configured_provider)
-        return cls(model_provider=provider,
+        settings = cls(model_provider=provider,
                    model_name=os.getenv("MODEL_NAME", "glm-5.2"),
                    model_api_key=api_key,
                    model_base_url=os.getenv("MODEL_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
@@ -135,6 +170,13 @@ class Settings:
                    model_request_timeout=float(os.getenv("MODEL_REQUEST_TIMEOUT", "60")),
                    model_max_retries=int(os.getenv("MODEL_MAX_RETRIES", "1")),
                    checkpoint_db_path=os.getenv("CHECKPOINT_DB_PATH", ".runtime/checkpoints.sqlite"),
+                   auth_db_path=os.getenv("AUTH_DB_PATH", ".runtime/users.sqlite"),
+                   auth_required=os.getenv("AUTH_REQUIRED", "true").lower() == "true",
+                   auth_session_ttl_seconds=max(300, int(os.getenv("AUTH_SESSION_TTL_SECONDS", "86400"))),
+                   auth_cookie_secure=os.getenv("AUTH_COOKIE_SECURE", "false").lower() == "true",
+                   auth_admin_password=os.getenv("AUTH_ADMIN_PASSWORD", "Admin@123"),
+                   auth_researcher_password=os.getenv("AUTH_RESEARCHER_PASSWORD", "Research@123"),
+                   auth_analyst_password=os.getenv("AUTH_ANALYST_PASSWORD", "Analyst@123"),
                    entity_backend=os.getenv("ENTITY_BACKEND", "milvus").lower(),
                    achievement_backend=os.getenv("ACHIEVEMENT_BACKEND", "mock").lower(),
                    graph_backend=os.getenv("GRAPH_BACKEND", "mock").lower(),
@@ -178,8 +220,26 @@ class Settings:
                    web_search_timeout=float(os.getenv("WEB_SEARCH_TIMEOUT", "15")),
                    web_search_max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS", "5")),
                    observability_db_path=os.getenv("OBSERVABILITY_DB_PATH", ".runtime/observability.sqlite"),
+                   memory_backend=os.getenv("MEMORY_BACKEND", "sqlite").lower(),
+                   memory_mysql_database=os.getenv("MEMORY_MYSQL_DATABASE", "gkx_runtime"),
                    conversation_memory_db_path=os.getenv("CONVERSATION_MEMORY_DB_PATH", ".runtime/conversation-memory.sqlite"),
                    query_experience_db_path=os.getenv("QUERY_EXPERIENCE_DB_PATH", ".runtime/query-experience.sqlite"),
+                   long_term_memory_db_path=os.getenv("LONG_TERM_MEMORY_DB_PATH", ".runtime/long-term-memory.sqlite"),
+                   memory_extraction_enabled=os.getenv("MEMORY_EXTRACTION_ENABLED", "true").lower() == "true",
+                   memory_worker_poll_seconds=max(0.1, float(os.getenv("MEMORY_WORKER_POLL_SECONDS", "1"))),
+                   memory_worker_batch_size=max(1, min(int(os.getenv("MEMORY_WORKER_BATCH_SIZE", "10")), 100)),
+                   memory_worker_lease_seconds=max(5, int(os.getenv("MEMORY_WORKER_LEASE_SECONDS", "60"))),
+                   memory_worker_max_attempts=max(1, int(os.getenv("MEMORY_WORKER_MAX_ATTEMPTS", "3"))),
+                   memory_fact_confidence_threshold=max(0.0, min(float(os.getenv("MEMORY_FACT_CONFIDENCE_THRESHOLD", "0.85")), 1.0)),
+                   memory_fact_max_per_scope=max(10, min(int(os.getenv("MEMORY_FACT_MAX_PER_SCOPE", "100")), 1000)),
+                   memory_fact_review_days=max(1, min(int(os.getenv("MEMORY_FACT_REVIEW_DAYS", "90")), 3650)),
+                   memory_fact_similarity_threshold=max(0.5, min(float(os.getenv("MEMORY_FACT_SIMILARITY_THRESHOLD", "0.86")), 0.99)),
+                   memory_recall_top_k=max(3, min(int(os.getenv("MEMORY_RECALL_TOP_K", "5")), 5)),
+                   memory_recall_candidate_limit=max(5, min(int(os.getenv("MEMORY_RECALL_CANDIDATE_LIMIT", "100")), 500)),
+                   memory_recall_token_budget=max(800, min(int(os.getenv("MEMORY_RECALL_TOKEN_BUDGET", "1000")), 1200)),
+                   memory_milvus_uri=os.getenv("MEMORY_MILVUS_URI", ".runtime/user-memory-milvus.db"),
+                   memory_milvus_collection=os.getenv("MEMORY_MILVUS_COLLECTION", "user_memory_facts_v1"),
+                   memory_retrieval_backend=os.getenv("MEMORY_RETRIEVAL_BACKEND", "mysql").lower(),
                    query_experience_mode=os.getenv("QUERY_EXPERIENCE_MODE", "shadow").lower(),
                    query_experience_scope_id=os.getenv("QUERY_EXPERIENCE_SCOPE_ID", "local"),
                    query_experience_candidate_limit=int(os.getenv("QUERY_EXPERIENCE_CANDIDATE_LIMIT", "5")),
@@ -191,3 +251,5 @@ class Settings:
                    model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),
                    model_output_cost_per_million=float(os.getenv("MODEL_OUTPUT_COST_PER_MILLION", "0")),
                    model_cost_currency=os.getenv("MODEL_COST_CURRENCY", "USD"))
+        settings.validate_memory_settings()
+        return settings

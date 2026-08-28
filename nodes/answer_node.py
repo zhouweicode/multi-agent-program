@@ -1,4 +1,6 @@
 """Answer Node：组合领域 Formatter，不调用模型、不自行补充事实。"""
+import logging
+
 from formatters.achievement_formatter import format_achievement
 from formatters.enterprise_formatter import format_enterprise
 from formatters.graph_formatter import format_graph
@@ -6,7 +8,10 @@ from formatters.industry_formatter import format_industry
 from formatters.talent_formatter import format_talent
 from formatters.web_formatter import format_web
 from graph.state import GraphRAGState
+from services.memory_manager import memory_manager
 from services.observability import emit_event
+
+logger = logging.getLogger(__name__)
 
 
 def answer_node(state: GraphRAGState) -> dict:
@@ -33,7 +38,27 @@ def answer_node(state: GraphRAGState) -> dict:
     ]
     sections = [text for text, _ in formatted if text]
     signals = [text.split("：", 1)[0] for text, supported in formatted if text and supported]
-    numbered = "\n".join(f"{index}. {text}。" for index, text in enumerate(sections, 1))
+    format_facts = [
+        fact for fact in state.get("long_term_memory_facts", [])
+        if fact.get("category") == "output_format"
+    ]
+    table_fact = next(
+        (fact for fact in format_facts if "表格" in str(fact.get("content") or "")),
+        None,
+    )
+    if table_fact:
+        escaped_sections = [text.replace("|", "&#124;") for text in sections]
+        rows = [
+            f"| {index} | {text} |"
+            for index, text in enumerate(escaped_sections, 1)
+        ]
+        numbered = "\n".join(["| 序号 | 分析结果 |", "| ---: | --- |", *rows])
+        applied_memory_fact_ids = [str(table_fact["fact_id"])]
+    else:
+        numbered = "\n".join(
+            f"{index}. {text}。" for index, text in enumerate(sections, 1)
+        )
+        applied_memory_fact_ids = []
 
     verification = state.get("verification_result")
     semantic = ""
@@ -62,5 +87,15 @@ def answer_node(state: GraphRAGState) -> dict:
               if has_web else "以上结论未使用知识图谱之外的事实。")
     subject = f"{names} 的分析如下" if names else "分析如下"
     answer = f"{basis}，{subject}：\n{numbered}{synthesis}{semantic}\n{footer}"
-    emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="PASS", has_verification=bool(verification))
-    return {"final_answer": answer}
+    emit_event("ANSWER_GENERATED", thread_id=state.get("thread_id"), validation_status="PASS",
+               has_verification=bool(verification),
+               memory_fact_ids=applied_memory_fact_ids)
+    if applied_memory_fact_ids and state.get("user_id"):
+        try:
+            memory_manager().mark_facts_applied(
+                str(state["user_id"]), applied_memory_fact_ids
+            )
+        except Exception:  # usage accounting must not block a validated answer
+            logger.exception("长期记忆应用次数写入失败")
+    return {"final_answer": answer,
+            "long_term_memory_applied_fact_ids": applied_memory_fact_ids}

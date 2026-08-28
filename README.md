@@ -17,6 +17,7 @@
 - Harness 的局部 Messages 不写入全局 State；完整 Tool Observation 留给事实与证据，压缩副本只回送模型，避免上下文膨胀。
 - Supervisor 重规划时读取 `missing_domains`、`missing_evidence` 和 `task_history`，只补调缺失领域，并受 `max_replans` 限制。
 - FastAPI 使用后台 Run 执行 LangGraph，`POST /queries` 立即返回 `RUNNING`，前端通过 SSE 接收轨迹和终态。
+- FastAPI 提供三用户登录、HttpOnly Cookie 会话与 API 认证；用户、密码哈希和会话保存在独立 SQLite，当前 `user_id` 会进入每次 GraphRAG State。
 - `run_id` 与一次执行绑定并禁止复用，避免旧 Checkpoint State 污染新问题。
 - 节点轨迹包含脱敏、限长的输入输出快照，并限制线程数和单线程事件数。
 - Entity Resolution 支持 `hybrid`：MySQL 权威精确召回、BGE-M3 + Milvus 语义补召回、上下文重排和置信阈值。
@@ -26,8 +27,13 @@
 - 领域Tool支持`local/mcp`双传输：local模式进程内调用；MCP模式从独立Server动态发现白名单工具并通过Streamable HTTP执行。
 - MCP Server复用现有Service/Repository，公开人才、成果、企业、产业、图检索、证据验证和可选联网搜索共七组能力；LangGraph控制节点保持本地。
 - WebResearchAgent仅在问题明确要求联网、最新资料、官网、新闻或外部查证时执行；网页结果作为带URL的外部候选证据，不覆盖图谱事实，也不自动回写图谱。
-- 对话记忆使用独立 `conversation_id` 跨多个 Run 保存已确认实体；Memory Node 在 Router 前解析“他/她/该教授”等指代，在 Answer 后写回，并与知识图谱事实库隔离。
-- 查询经验记忆将通过校验的历史 Run 聚合成归一化问题模板和成功策略，记录路由、Agent、Tool、延迟、Token 与成本；第一版默认 `Shadow`，只召回、评分和比较，不绕过 Router、Supervisor 或 Validator。
+- 对话记忆以 `(user_id, conversation_id)` 隔离并跨多个 Run 保存已确认实体；Memory Node 在 Router 前解析“他/她/该教授”等指代，在 Answer 后写回，并与知识图谱事实库隔离。
+- 查询经验记忆区分用户私有作用域与脱敏全局作用域：每个用户保留自己的正负经验，只有通过校验且完成模板脱敏的成功策略才进入全局共享；默认 `Shadow`，不绕过 Router、Supervisor 或 Validator。
+- 统一 `MemoryManager` 隔离业务层与存储实现：生产配置将会话、长期事实和查询经验写入独立 MySQL `gkx_runtime`，SQLite 适配器仅用于本地开发和测试。
+- 长期记忆采用被动异步抽取：用户输入先脱敏进入持久任务队列，后台 Worker 只保存明确的偏好、长期关注、修正、稳定约束和固定输出格式；失败不影响主查询。
+- 长期记忆召回采用 MySQL 权威事实与独立 Milvus `user_memory_facts_v1` 混合索引，按相关性与类别优先级选取 Top 3～5；注入前进行 XML 转义和 800～1200 Token 预算控制，且不能充当知识图谱证据或改变 Agent/Tool 路由。
+- 顶栏“记忆管理”按当前登录用户提供长期事实摘要、搜索、手动增删改、JSON 导出和二次确认的全量清除；答案区可追踪本轮召回及实际应用的记忆。
+- 长期事实采用 90 天复核、相似合并、冲突替换和每用户/Agent 100 条容量治理；修改、删除及复核使用 revision 乐观锁，并记录召回、应用与完整写入审计。
 - `expert_report` Skill 只声明 SOP、能力需求和输出协议；Supervisor 将能力展开为现有 Agent 任务，确定性 Composer 不持有 Tool 权限，只消费已验证证据，并支持企业、网络和联网章节降级。
 - `industry_landscape` Skill 复用 IndustryAgent 获取产业节点、链结构、关联企业和事件，并可选调用 WebResearchAgent；报告不会把记录数量和事件重要度臆测为市场规模或投资结论。
 
@@ -210,10 +216,12 @@ export MCP_SERVER_URL=http://127.0.0.1:8100/mcp
 
 启动后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000) 打开 GraphRAG Studio 前端。页面支持：
 
+- 从登录页选择系统管理员、科研用户或分析用户；登录后顶栏显示当前账号并可退出；
 - 输入自然语言问题并创建独立 `thread_id`；
 - 使用“联网搜索”按钮按查询开启或关闭 WebResearchAgent；关闭时后端不会构建联网 Agent 或调用 Tavily/MCP；
 - 使用“对话记忆”按钮开启多轮实体指代；“清除记忆”会删除当前会话的轮次和实体焦点，但不会删除知识图谱数据；
 - 使用“经验记忆”按钮按查询开启或关闭历史策略召回；结果区展示命中模板、相似度、置信度、样本数、成功率和历史 Agent/Tool 策略；
+- 使用顶栏“记忆管理”搜索和维护长期事实；待复核事实可续期或归档，页面展示 revision、召回次数、应用次数和最近召回时间；
 - 实时查看 Router、Entity Resolution、Supervisor、Domain Agent、Tool、Merge、Validator、Verification 和 Answer 事件；
 - 在检测到同名专家时选择候选 `entity_id`，从 LangGraph interrupt 中断点恢复；
 - 查看最终中文答案、规则校验状态、实体 ID 和完整 `GraphRAGState`；
@@ -226,6 +234,18 @@ frontend/index.html
 frontend/styles.css
 frontend/app.js
 ```
+
+### 本地登录账号
+
+首次启动会在 `.runtime/users.sqlite` 创建三个账号。密码只以 PBKDF2-SHA256 哈希存储，浏览器会话使用 HttpOnly Cookie：
+
+| 显示名称 | 用户名 | 初始密码 | `user_id` |
+|---|---|---|---|
+| 系统管理员 | `admin` | `Admin@123` | `user-admin` |
+| 科研用户 | `researcher` | `Research@123` | `user-researcher` |
+| 分析用户 | `analyst` | `Analyst@123` | `user-analyst` |
+
+初始密码可通过 `.env` 的 `AUTH_ADMIN_PASSWORD`、`AUTH_RESEARCHER_PASSWORD`、`AUTH_ANALYST_PASSWORD` 修改。它们仅在账号第一次写入数据库时生效，不会在重启时覆盖已有密码。以上默认值仅适合本地开发；对外部署前必须替换，使用 HTTPS，并设置 `AUTH_COOKIE_SECURE=true`。
 
 ## 模型配置
 
@@ -282,25 +302,36 @@ uvicorn app.main:app --reload
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
+| `GET` | `/auth/users` | 返回登录页可选用户，不返回密码或哈希 |
+| `POST` | `/auth/login` | 校验用户和密码并创建持久化登录会话 |
+| `GET` | `/auth/me` | 查询当前登录用户 |
+| `POST` | `/auth/logout` | 注销当前会话并清除 Cookie |
 | `POST` | `/queries` | 创建后台 Run，立即返回 `202 RUNNING` |
 | `POST` | `/queries/{run_id}/resume` | 提交 `{姓名: entity_id}`，后台恢复执行 |
 | `POST` | `/queries/{run_id}/cancel` | 协作式取消后台 Run |
 | `GET` | `/queries/{run_id}` | 查询运行状态，包括 `ENTITY_NOT_FOUND/CANCELLED/TIMED_OUT` |
 | `GET` | `/queries/{run_id}/stream` | SSE 推送 trace 与终态 |
 | `GET` | `/queries/{run_id}/history` | 查询 SQLite Checkpoint 历史 |
-| `GET` | `/conversations/{conversation_id}/memory` | 查询当前会话的轮次和实体焦点 |
-| `DELETE` | `/conversations/{conversation_id}/memory` | 清除当前会话记忆，不影响知识图谱 |
-| `GET` | `/experience-memory/stats` | 查询经验模式、正负样本和平均运行指标 |
-| `GET` | `/experience-memory/patterns` | 查询归一化问题模板及历史成功策略 |
+| `GET` | `/conversations/{conversation_id}/memory` | 查询当前用户拥有的会话轮次和实体焦点 |
+| `DELETE` | `/conversations/{conversation_id}/memory` | 清除当前用户拥有的会话记忆，不影响知识图谱 |
+| `GET` | `/memory/summary` | 查看当前用户长期记忆摘要 |
+| `GET` / `POST` | `/memory/facts` | 搜索或新增当前用户长期事实 |
+| `PATCH` / `DELETE` | `/memory/facts/{fact_id}` | 携带 `expected_revision` 修改或删除当前用户拥有的事实 |
+| `POST` | `/memory/facts/{fact_id}/review` | 续期或归档到期待复核的事实 |
+| `GET` | `/memory/audit` | 查询当前用户的记忆生命周期审计 |
+| `GET` | `/memory/export` | 导出当前用户个人记忆 JSON |
+| `DELETE` | `/memory` | 二次确认后清除当前用户全部个人记忆 |
+| `GET` | `/experience-memory/stats` | 查询当前用户私有及脱敏全局经验统计 |
+| `GET` | `/experience-memory/patterns` | 查询当前用户可见的私有及全局历史策略 |
 | `GET` | `/queries/{run_id}/events` | 兼容性增量事件接口 |
 | `GET` | `/health` | 查看阶段、模型后端和 Checkpointer |
 | `GET` | `/health/dependencies` | 主动探测当前启用的 MySQL、Milvus、Neo4j 或 Mock 后端 |
 | `GET` | `/metrics` | 查看无敏感数据的运行状态与耗时摘要 |
 
-默认检查点文件是 `.runtime/checkpoints.sqlite`，已被 `.gitignore` 排除。
+默认检查点文件是 `.runtime/checkpoints.sqlite`，用户和登录会话文件是 `.runtime/users.sqlite`，都已被 `.gitignore` 排除。
 新问题必须使用新的 `run_id`；重复提交相同 ID 返回 `409`。
 
-查询经验存储默认为 `.runtime/query-experience.sqlite`，与图谱事实库和对话记忆隔离。只有存在最终答案、规则校验通过且领域 Tool 无错误的 Run 才作为正经验；失败 Run 只累计负样本，不会覆盖推荐策略。默认至少 5 个样本且置信度达到 0.75 才标记为可应用，但 `Shadow` 模式仍不会直接改变执行路径。
+生产环境通过 `MEMORY_BACKEND=mysql` 将记忆写入独立 `gkx_runtime` 数据库；设置为 `sqlite` 时，会话、经验和长期事实分别使用 `.runtime` 下的三个 SQLite 文件。用户私有作用域记录正负样本；只有存在最终答案、规则校验通过、领域 Tool 无错误且模板通过脱敏检查的 Run 才进入全局作用域。默认至少 5 个样本且置信度达到 0.75 才标记为可应用，但 `Shadow` 模式仍不会直接改变执行路径。升级前没有用户归属字段的旧 SQLite 记忆会保留在不可召回的 `legacy`/`legacy-unowned` 隔离桶中。
 
 ## 完整执行流程
 
@@ -448,9 +479,11 @@ CI 使用 `evals/baselines/agentops_v1.json` 同时执行绝对门槛与相对�
 
 产业全景报告 Skill 的边界、证据规则和评测见 [docs/10_industry_landscape_skill.md](docs/10_industry_landscape_skill.md)。
 
+四层记忆架构、分阶段迁移边界和验收状态见 [docs/11_memory_architecture.md](docs/11_memory_architecture.md)。
+
 ## 后续阶段建议
 
-后续可增加 API 鉴权、Redis/Celery 或同类跨进程任务队列，并将当前 vendor-neutral Trace 导出为
+后续可增加用户管理后台、细粒度 Run/记忆访问授权、Redis/Celery 或同类跨进程任务队列，并将当前 vendor-neutral Trace 导出为
 OpenTelemetry/OTLP，接入 Grafana Tempo、Jaeger 或 LangSmith。
 
 第七阶段运行时和任务契约详解见 [docs/03_stage7_runtime.md](docs/03_stage7_runtime.md)。

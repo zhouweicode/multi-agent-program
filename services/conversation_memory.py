@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import re
-from threading import Lock
 from typing import Any
 
 from langgraph.types import interrupt
 
 from graph.state import GraphRAGState
 from models.settings import Settings
-from repositories.conversation_memory_repository import SQLiteConversationMemoryRepository
+from services.long_term_memory import build_memory_update_payload
+from services.memory_manager import memory_manager
+from services.memory_recall import recall_long_term_memory
 from services.observability import emit_event
 from services.resources import get_entity_service
 from services.telemetry import traced_span
@@ -19,28 +20,6 @@ _REFERENCE_PATTERNS = (
     r"(?<!其)他(?!们)", r"她(?!们)",
 )
 _REFERENCE_RE = re.compile("|".join(f"(?:{pattern})" for pattern in _REFERENCE_PATTERNS))
-
-
-_repositories: dict[str, SQLiteConversationMemoryRepository] = {}
-_repository_lock = Lock()
-
-
-def conversation_memory_repository() -> SQLiteConversationMemoryRepository:
-    path = Settings.from_env().conversation_memory_db_path
-    with _repository_lock:
-        repository = _repositories.get(path)
-        if repository is None:
-            repository = SQLiteConversationMemoryRepository(path)
-            _repositories[path] = repository
-        return repository
-
-
-def close_conversation_memory() -> None:
-    with _repository_lock:
-        repositories = list(_repositories.values())
-        _repositories.clear()
-    for repository in repositories:
-        repository.close()
 
 
 def _references(question: str) -> list[str]:
@@ -60,8 +39,10 @@ def _candidate(entity: dict[str, Any]) -> dict[str, Any]:
 
 def recall_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
     original = state.get("original_question") or state["question"]
-    if not state.get("memory_enabled") or not state.get("conversation_id"):
-        return {"original_question": original, "contextualized_question": original,
+    long_term = recall_long_term_memory(dict(state))
+    user_id = state.get("user_id")
+    if not state.get("memory_enabled") or not state.get("conversation_id") or not user_id:
+        return long_term | {"original_question": original, "contextualized_question": original,
                 "conversation_entities": [], "memory_reference_resolution": {},
                 "memory_status": "DISABLED"}
 
@@ -70,19 +51,21 @@ def recall_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
     with traced_span("memory.conversation.recall", "memory", {
         "run.id": run_id, "conversation.id": conversation_id,
     }):
-        memory = conversation_memory_repository().get(conversation_id)
+        memory = memory_manager().recall_context(
+            user_id, conversation_id, query=original, top_k=0
+        )["conversation"]
         entities = memory["entities"]
         references = _references(original)
         if not references:
             emit_event("MEMORY_RECALLED", thread_id=run_id, conversation_id=conversation_id,
                        entity_count=len(entities), reference_count=0, status="NO_REFERENCE")
-            return {"original_question": original, "contextualized_question": original,
+            return long_term | {"original_question": original, "contextualized_question": original,
                     "conversation_entities": entities, "memory_reference_resolution": {},
                     "memory_status": "NO_REFERENCE"}
         if not entities:
             emit_event("MEMORY_RECALLED", thread_id=run_id, conversation_id=conversation_id,
                        entity_count=0, reference_count=len(references), status="EMPTY")
-            return {"original_question": original, "contextualized_question": original,
+            return long_term | {"original_question": original, "contextualized_question": original,
                     "conversation_entities": [], "memory_reference_resolution": {},
                     "memory_status": "EMPTY"}
 
@@ -109,7 +92,7 @@ def recall_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
                       for reference in references}
         emit_event("MEMORY_REFERENCE_RESOLVED", thread_id=run_id, conversation_id=conversation_id,
                    references=references, entity_id=selected["entity_id"], entity_name=selected["name"])
-        return {
+        return long_term | {
             "question": contextualized,
             "original_question": original,
             "contextualized_question": contextualized,
@@ -123,7 +106,8 @@ def recall_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
 
 
 def write_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
-    if not state.get("memory_enabled") or not state.get("conversation_id"):
+    user_id = state.get("user_id")
+    if not state.get("memory_enabled") or not state.get("conversation_id") or not user_id:
         return {"memory_status": "DISABLED"}
     if not state.get("final_answer"):
         return {"memory_status": "SKIPPED"}
@@ -148,7 +132,9 @@ def write_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
         "run.id": run_id, "conversation.id": conversation_id,
         "memory.entity_count": len(entities),
     }):
-        memory = conversation_memory_repository().record_turn(
+        manager = memory_manager()
+        memory = manager.record_turn(
+            user_id=user_id,
             conversation_id=conversation_id,
             run_id=run_id,
             original_question=state.get("original_question") or state.get("question", ""),
@@ -158,7 +144,33 @@ def write_conversation_memory(state: GraphRAGState) -> dict[str, Any]:
             primary_domain=state.get("primary_domain"),
             entities=entities,
         )
+    extraction_status = "DISABLED"
+    if Settings.from_env().memory_extraction_enabled:
+        try:
+            queued = manager.enqueue_update(
+                user_id=user_id,
+                run_id=run_id,
+                payload=build_memory_update_payload(dict(state)),
+                conversation_id=conversation_id,
+            )
+            extraction_status = "QUEUED" if queued else "DUPLICATE"
+            emit_event(
+                "LONG_TERM_MEMORY_UPDATE_QUEUED" if queued else
+                "LONG_TERM_MEMORY_UPDATE_SKIPPED",
+                thread_id=run_id,
+                conversation_id=conversation_id,
+                reason=None if queued else "duplicate_run",
+            )
+        except Exception as exc:  # noqa: BLE001 - extraction is fail-open
+            extraction_status = "FAILED_OPEN"
+            emit_event(
+                "LONG_TERM_MEMORY_UPDATE_FAILED_OPEN",
+                thread_id=run_id,
+                conversation_id=conversation_id,
+                error_type=type(exc).__name__,
+            )
     emit_event("MEMORY_WRITTEN", thread_id=run_id, conversation_id=conversation_id,
                turn_count=memory["turn_count"], entity_count=len(memory["entities"]))
     return {"conversation_entities": memory["entities"],
-            "conversation_turn_count": memory["turn_count"], "memory_status": "WRITTEN"}
+            "conversation_turn_count": memory["turn_count"], "memory_status": "WRITTEN",
+            "long_term_memory_update_status": extraction_status}

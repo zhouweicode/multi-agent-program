@@ -4,6 +4,7 @@ from typing import Annotated, Any, TypedDict
 
 
 class GraphRAGState(TypedDict, total=False):
+    user_id: str
     thread_id: str
     question: str
     original_question: str
@@ -11,12 +12,20 @@ class GraphRAGState(TypedDict, total=False):
     conversation_id: str
     memory_enabled: bool
     memory_status: str
+    long_term_memory_update_status: str
+    long_term_memory_recall_status: str
+    long_term_memory_facts: list[dict[str, Any]]
+    long_term_memory_prompt: str
+    long_term_memory_used_fact_ids: list[str]
+    long_term_memory_applied_fact_ids: list[str]
+    long_term_memory_estimated_tokens: int
     memory_reference_resolution: dict[str, dict[str, str]]
     conversation_entities: list[dict[str, Any]]
     conversation_turn_count: int
     experience_memory_enabled: bool
     experience_recall_status: str
     experience_writeback_status: str
+    experience_global_writeback_status: str
     experience_mode: str
     experience_query_template: str
     experience_candidates: list[dict[str, Any]]

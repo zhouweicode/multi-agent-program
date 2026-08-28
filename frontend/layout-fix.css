@@ -585,3 +585,233 @@
 /* 主按钮在运行中承担停止操作，颜色明确区分危险动作。 */
 .query-row #submitBtn.stop-mode { background: linear-gradient(135deg, #ff8a72, #ff5f7c); color: #26070c; }
 .query-row #submitBtn.stopping { opacity: .65; cursor: wait; }
+
+/* 多用户登录与顶栏账号区。 */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(57, 217, 208, .16), transparent 34%),
+    radial-gradient(circle at 82% 82%, rgba(102, 126, 234, .14), transparent 36%),
+    rgba(2, 12, 19, .94);
+  backdrop-filter: blur(18px);
+}
+
+.login-screen.hidden { display: none; }
+
+.login-card {
+  width: min(440px, 100%);
+  padding: 34px;
+  border: 1px solid rgba(57, 217, 208, .28);
+  border-radius: 22px;
+  background: linear-gradient(150deg, rgba(13, 40, 55, .98), rgba(5, 21, 31, .98));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, .55), inset 0 1px rgba(255, 255, 255, .04);
+}
+
+.login-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 28px; font-weight: 700; }
+.login-eyebrow { color: var(--cyan); font: 10px/1.4 ui-monospace, monospace; letter-spacing: .18em; }
+.login-card h1 { margin: 8px 0 10px; font-size: clamp(26px, 6vw, 38px); }
+.login-card > p { margin: 0 0 25px; color: var(--muted); line-height: 1.75; }
+.login-card form { display: grid; gap: 10px; }
+.login-card label { margin-top: 5px; color: #b6d2da; font-size: 12px; }
+.login-card select,
+.login-card input {
+  width: 100%;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: #061720;
+  outline: none;
+}
+.login-card select:focus,
+.login-card input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(57, 217, 208, .1); }
+.login-card option { color: #102631; background: #eefbff; }
+.login-card button {
+  height: 50px;
+  margin-top: 9px;
+  border: 0;
+  border-radius: 10px;
+  color: #042128;
+  background: linear-gradient(135deg, var(--cyan), #7de2b8);
+  font-weight: 800;
+  cursor: pointer;
+}
+.login-card button:disabled { opacity: .58; cursor: wait; }
+.login-error { margin: 3px 0 0 !important; color: #ff9cae !important; font-size: 12px; }
+.login-hint { display: block; margin-top: 20px; color: var(--muted); line-height: 1.65; }
+.login-hint code { color: #91dce2; }
+
+body.auth-pending { overflow: hidden; }
+body.auth-pending > .topbar,
+body.auth-pending > .shell,
+body.auth-pending > footer { pointer-events: none; user-select: none; }
+
+.topbar-actions { display: flex; align-items: center; gap: 13px; }
+.user-menu { display: flex; align-items: center; gap: 12px; padding-left: 13px; border-left: 1px solid var(--line); }
+.user-menu.hidden { display: none; }
+.user-menu div { display: grid; text-align: right; }
+.user-menu strong { font-size: 12px; }
+.user-menu small { color: var(--muted); font: 9px/1.5 ui-monospace, monospace; }
+.user-menu button {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(10, 33, 45, .72);
+  cursor: pointer;
+}
+.user-menu button:hover { color: #ff9cae; border-color: rgba(255, 95, 124, .4); }
+.user-menu .memory-manager-open { color: #94e9e7; border-color: rgba(57, 217, 208, .35); }
+.user-menu .memory-manager-open:hover { color: #d9fffd; border-color: var(--cyan); background: rgba(57, 217, 208, .12); }
+
+/* 长期记忆使用追踪。 */
+.memory-usage-panel {
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid rgba(115, 233, 181, .22);
+  border-radius: 14px;
+  background: rgba(7, 34, 40, .52);
+}
+.memory-usage-facts { display: grid; gap: 10px; margin-top: 13px; }
+.memory-usage-fact,
+.memory-fact-card {
+  padding: 13px 14px;
+  border: 1px solid rgba(123, 177, 190, .16);
+  border-radius: 10px;
+  background: rgba(4, 20, 29, .72);
+}
+.memory-usage-fact p,
+.memory-fact-card p { margin: 9px 0; line-height: 1.65; overflow-wrap: anywhere; }
+.memory-usage-fact small,
+.memory-fact-card small { display: block; color: var(--muted); line-height: 1.55; overflow-wrap: anywhere; }
+.memory-usage-empty { margin: 0; color: var(--muted); }
+.memory-fact-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.memory-category,
+.memory-applied,
+.memory-recalled,
+.memory-active,
+.memory-expired {
+  display: inline-flex;
+  padding: 3px 8px;
+  border: 1px solid rgba(57, 217, 208, .25);
+  border-radius: 999px;
+  color: #a9efed;
+  font: 10px/1.4 ui-monospace, monospace;
+}
+.memory-applied,
+.memory-active { color: #79edb7; border-color: rgba(84, 225, 158, .32); }
+.memory-recalled { color: #91c9dc; border-color: rgba(95, 164, 187, .3); }
+.memory-expired { color: #ff9cae; border-color: rgba(255, 95, 124, .32); }
+
+/* 用户长期记忆管理弹窗。 */
+.memory-manager-modal .event-modal-card { width: min(1120px, calc(100vw - 32px)); }
+.memory-manager-card { max-height: min(880px, calc(100vh - 32px)); overflow: auto; }
+.memory-manager-description { color: var(--muted); line-height: 1.7; }
+.memory-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.memory-summary-cards > div {
+  display: grid;
+  gap: 7px;
+  min-height: 76px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 24, 34, .72);
+}
+.memory-summary-cards span { color: var(--muted); font-size: 11px; }
+.memory-summary-cards strong { color: #d8f7f4; font-size: 15px; overflow-wrap: anywhere; }
+.memory-manager-toolbar {
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) 150px auto auto auto;
+  gap: 9px;
+}
+.memory-manager-toolbar input,
+.memory-manager-toolbar select,
+.memory-fact-form textarea,
+.memory-fact-form select,
+.memory-fact-form input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: #061720;
+  outline: none;
+}
+.memory-manager-toolbar input,
+.memory-manager-toolbar select,
+.memory-fact-form select,
+.memory-fact-form input { min-height: 40px; padding: 0 11px; }
+.memory-fact-form textarea { padding: 11px; resize: vertical; }
+.memory-manager-toolbar input:focus,
+.memory-manager-toolbar select:focus,
+.memory-fact-form textarea:focus,
+.memory-fact-form select:focus,
+.memory-fact-form input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(57, 217, 208, .08); }
+.memory-manager-toolbar button,
+.memory-form-actions button,
+.memory-fact-actions button,
+.memory-danger-zone button {
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: #b9d6dd;
+  background: rgba(9, 34, 46, .85);
+  cursor: pointer;
+}
+.memory-manager-toolbar .primary-action,
+.memory-form-actions .primary-action { border: 0; color: #042128; background: linear-gradient(135deg, var(--cyan), #7de2b8); }
+.memory-fact-form {
+  display: grid;
+  gap: 12px;
+  margin: 15px 0;
+  padding: 15px;
+  border: 1px solid rgba(57, 217, 208, .22);
+  border-radius: 12px;
+  background: rgba(7, 30, 41, .78);
+}
+.memory-fact-form.hidden { display: none; }
+.memory-fact-form label { display: grid; gap: 7px; color: #b9d6dd; font-size: 11px; }
+.memory-form-row { display: grid; grid-template-columns: 1fr 130px 210px; gap: 10px; }
+.memory-form-actions { display: flex; gap: 9px; }
+.memory-fact-list { display: grid; gap: 10px; margin-top: 15px; }
+.memory-fact-card.expired { opacity: .68; }
+.memory-fact-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 11px; }
+.memory-fact-actions button { padding: 6px 10px; }
+.memory-fact-actions .danger,
+.memory-danger-zone button { color: #ff9cae; border-color: rgba(255, 95, 124, .35); }
+.memory-danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+  padding: 15px;
+  border: 1px solid rgba(255, 95, 124, .24);
+  border-radius: 12px;
+  background: rgba(63, 17, 29, .16);
+}
+.memory-danger-zone div { display: grid; gap: 5px; }
+.memory-danger-zone strong { color: #ffc0cb; }
+.memory-danger-zone small { color: var(--muted); line-height: 1.5; }
+
+@media (max-width: 680px) {
+  .login-card { padding: 25px; }
+  .topbar-actions .system-status { display: none; }
+  .user-menu { padding-left: 0; border-left: 0; }
+  .user-menu div { display: none; }
+  .memory-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .memory-manager-toolbar { grid-template-columns: 1fr 1fr; }
+  .memory-manager-toolbar input { grid-column: 1 / -1; }
+  .memory-form-row { grid-template-columns: 1fr; }
+  .memory-danger-zone { align-items: stretch; flex-direction: column; }
+}

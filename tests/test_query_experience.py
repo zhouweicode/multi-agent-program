@@ -9,6 +9,7 @@ from services.query_experience import (
     recall_query_experience,
     write_query_experience,
 )
+from services.memory_manager import memory_manager
 from tests.helpers import wait_for_run
 
 client = TestClient(app)
@@ -20,6 +21,7 @@ def _id(prefix: str) -> str:
 
 def _successful_state(question: str, name: str, run_id: str) -> dict:
     return {
+        "user_id": "local-user",
         "thread_id": run_id,
         "question": question,
         "experience_memory_enabled": True,
@@ -54,6 +56,7 @@ def test_successful_experience_is_recalled_in_shadow_mode():
     assert written["experience_pattern"]["success_count"] == 1
 
     recalled = recall_query_experience({
+        "user_id": "local-user",
         "thread_id": _id("experience-recall"),
         "question": f"李明发表过哪些{marker}论文？",
         "entity_mentions": ["李明"],
@@ -82,6 +85,7 @@ def test_negative_experience_is_stored_but_not_recommended():
     assert written["experience_pattern"]["failure_count"] == 1
 
     recalled = recall_query_experience({
+        "user_id": "local-user",
         "thread_id": _id("experience-negative-recall"),
         "question": f"李明的{marker}失败查询",
         "entity_mentions": ["李明"],
@@ -133,3 +137,46 @@ def test_repeated_api_query_hits_experience_and_exposes_stats():
     patterns = client.get("/experience-memory/patterns?limit=10")
     assert patterns.status_code == 200
     assert patterns.json()["patterns"]
+
+
+def test_private_experience_is_isolated_and_safe_success_is_shared_globally():
+    marker = f"跨用户安全模板{uuid4().hex}"
+    researcher_state = _successful_state(
+        f"张伟发表过哪些{marker}论文？", "张伟", _id("experience-global")
+    )
+    researcher_state["user_id"] = "user-researcher"
+    written = write_query_experience(researcher_state)
+    assert written["experience_writeback_status"] == "WRITTEN"
+    assert written["experience_global_writeback_status"] == "WRITTEN"
+
+    recalled = recall_query_experience({
+        "user_id": "user-analyst",
+        "thread_id": _id("experience-global-recall"),
+        "question": f"李明发表过哪些{marker}论文？",
+        "entity_mentions": ["李明"],
+        "intent": "事实查询",
+        "complexity": "simple",
+        "primary_domain": "achievement",
+        "experience_memory_enabled": True,
+    })
+    assert recalled["experience_recall_status"] == "HIT"
+    assert recalled["experience_match"]["scope_type"] == "global"
+
+    sensitive_marker = "privateonly" + "".join(
+        chr(ord("a") + int(character, 16)) for character in uuid4().hex
+    )
+    private_state = _successful_state(
+        f"张伟的api_key：{sensitive_marker}专属查询", "张伟", _id("experience-private")
+    )
+    private_state["user_id"] = "user-researcher"
+    private_written = write_query_experience(private_state)
+    assert private_written["experience_writeback_status"] == "WRITTEN"
+    assert private_written["experience_global_writeback_status"] == "SKIPPED"
+
+    manager = memory_manager()
+    researcher_patterns = manager.list_experience_patterns(
+        "user", "user-researcher", 500
+    )
+    analyst_patterns = manager.list_experience_patterns("user", "user-analyst", 500)
+    assert any(sensitive_marker in row["query_template"] for row in researcher_patterns)
+    assert not any(sensitive_marker in row["query_template"] for row in analyst_patterns)

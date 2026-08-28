@@ -18,21 +18,28 @@ def _now() -> str:
 
 
 class SQLiteConversationMemoryRepository:
+    LEGACY_OWNER_ID = "legacy-unowned"
+
     def __init__(self, path: str):
         db_path = Path(path)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(db_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._lock = Lock()
+        self._migrate_legacy_schema()
         with self._connection:
+            self._connection.execute("PRAGMA foreign_keys = ON")
             self._connection.executescript("""
                 CREATE TABLE IF NOT EXISTS memory_conversations (
-                    conversation_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(user_id, conversation_id)
                 );
                 CREATE TABLE IF NOT EXISTS memory_turns (
                     turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     run_id TEXT NOT NULL UNIQUE,
                     original_question TEXT NOT NULL,
@@ -42,12 +49,14 @@ class SQLiteConversationMemoryRepository:
                     primary_domain TEXT,
                     resolved_entities_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    FOREIGN KEY(conversation_id) REFERENCES memory_conversations(conversation_id)
+                    FOREIGN KEY(user_id, conversation_id)
+                        REFERENCES memory_conversations(user_id, conversation_id)
                         ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_turns_conversation
-                    ON memory_turns(conversation_id, turn_id DESC);
+                    ON memory_turns(user_id, conversation_id, turn_id DESC);
                 CREATE TABLE IF NOT EXISTS memory_entities (
+                    user_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     entity_id TEXT NOT NULL,
                     name TEXT NOT NULL,
@@ -57,25 +66,131 @@ class SQLiteConversationMemoryRepository:
                     mention_count INTEGER NOT NULL DEFAULT 1,
                     last_seen_turn INTEGER NOT NULL,
                     updated_at TEXT NOT NULL,
-                    PRIMARY KEY(conversation_id, entity_id),
-                    FOREIGN KEY(conversation_id) REFERENCES memory_conversations(conversation_id)
+                    PRIMARY KEY(user_id, conversation_id, entity_id),
+                    FOREIGN KEY(user_id, conversation_id)
+                        REFERENCES memory_conversations(user_id, conversation_id)
                         ON DELETE CASCADE
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_entities_focus
-                    ON memory_entities(conversation_id, last_seen_turn DESC, mention_count DESC);
+                    ON memory_entities(
+                        user_id, conversation_id, last_seen_turn DESC, mention_count DESC
+                    );
             """)
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        return {
+            str(row["name"])
+            for row in self._connection.execute(
+                f'PRAGMA table_info("{table_name}")'
+            ).fetchall()
+        }
+
+    def _migrate_legacy_schema(self) -> None:
+        """Upgrade the pre-user-scope schema without assigning data to a real user.
+
+        Historical rows have no trustworthy owner information. They are retained
+        under a sentinel bucket so an authenticated user cannot accidentally read
+        or delete another user's old conversation.
+        """
+        columns = self._table_columns("memory_conversations")
+        if not columns or "user_id" in columns:
+            return
+
+        owner = self.LEGACY_OWNER_ID
+        self._connection.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self._connection:
+                self._connection.executescript("""
+                    CREATE TABLE memory_conversations_v2 (
+                        user_id TEXT NOT NULL,
+                        conversation_id TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(user_id, conversation_id)
+                    );
+                    CREATE TABLE memory_turns_v2 (
+                        turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id TEXT NOT NULL,
+                        conversation_id TEXT NOT NULL,
+                        run_id TEXT NOT NULL UNIQUE,
+                        original_question TEXT NOT NULL,
+                        contextualized_question TEXT NOT NULL,
+                        final_answer TEXT,
+                        intent TEXT,
+                        primary_domain TEXT,
+                        resolved_entities_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY(user_id, conversation_id)
+                            REFERENCES memory_conversations_v2(user_id, conversation_id)
+                            ON DELETE CASCADE
+                    );
+                    CREATE TABLE memory_entities_v2 (
+                        user_id TEXT NOT NULL,
+                        conversation_id TEXT NOT NULL,
+                        entity_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        organization TEXT,
+                        title TEXT,
+                        entity_type TEXT NOT NULL DEFAULT 'scholar',
+                        mention_count INTEGER NOT NULL DEFAULT 1,
+                        last_seen_turn INTEGER NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(user_id, conversation_id, entity_id),
+                        FOREIGN KEY(user_id, conversation_id)
+                            REFERENCES memory_conversations_v2(user_id, conversation_id)
+                            ON DELETE CASCADE
+                    );
+                """)
+                self._connection.execute("""
+                    INSERT INTO memory_conversations_v2(
+                        user_id, conversation_id, created_at, updated_at
+                    )
+                    SELECT ?, conversation_id, created_at, updated_at
+                    FROM memory_conversations
+                """, (owner,))
+                self._connection.execute("""
+                    INSERT INTO memory_turns_v2(
+                        turn_id, user_id, conversation_id, run_id,
+                        original_question, contextualized_question, final_answer,
+                        intent, primary_domain, resolved_entities_json, created_at
+                    )
+                    SELECT turn_id, ?, conversation_id, run_id,
+                           original_question, contextualized_question, final_answer,
+                           intent, primary_domain, resolved_entities_json, created_at
+                    FROM memory_turns
+                """, (owner,))
+                self._connection.execute("""
+                    INSERT INTO memory_entities_v2(
+                        user_id, conversation_id, entity_id, name, organization,
+                        title, entity_type, mention_count, last_seen_turn, updated_at
+                    )
+                    SELECT ?, conversation_id, entity_id, name, organization,
+                           title, entity_type, mention_count, last_seen_turn, updated_at
+                    FROM memory_entities
+                """, (owner,))
+                self._connection.executescript("""
+                    DROP TABLE memory_entities;
+                    DROP TABLE memory_turns;
+                    DROP TABLE memory_conversations;
+                    ALTER TABLE memory_conversations_v2 RENAME TO memory_conversations;
+                    ALTER TABLE memory_turns_v2 RENAME TO memory_turns;
+                    ALTER TABLE memory_entities_v2 RENAME TO memory_entities;
+                """)
+        finally:
             self._connection.execute("PRAGMA foreign_keys = ON")
 
-    def ensure_conversation(self, conversation_id: str) -> None:
+    def ensure_conversation(self, user_id: str, conversation_id: str) -> None:
         now = _now()
         with self._lock, self._connection:
             self._connection.execute("""
-                INSERT INTO memory_conversations(conversation_id, created_at, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(conversation_id) DO UPDATE SET updated_at=excluded.updated_at
-            """, (conversation_id, now, now))
+                INSERT INTO memory_conversations(
+                    user_id, conversation_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, conversation_id)
+                DO UPDATE SET updated_at=excluded.updated_at
+            """, (user_id, conversation_id, now, now))
 
-    def record_turn(self, conversation_id: str, run_id: str, original_question: str,
+    def record_turn(self, user_id: str, conversation_id: str, run_id: str, original_question: str,
                     contextualized_question: str, final_answer: str | None,
                     intent: str | None, primary_domain: str | None,
                     entities: list[dict[str, Any]]) -> dict[str, Any]:
@@ -83,17 +198,19 @@ class SQLiteConversationMemoryRepository:
         now = _now()
         with self._lock, self._connection:
             self._connection.execute("""
-                INSERT INTO memory_conversations(conversation_id, created_at, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(conversation_id) DO UPDATE SET updated_at=excluded.updated_at
-            """, (conversation_id, now, now))
+                INSERT INTO memory_conversations(
+                    user_id, conversation_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id, conversation_id)
+                DO UPDATE SET updated_at=excluded.updated_at
+            """, (user_id, conversation_id, now, now))
             cursor = self._connection.execute("""
                 INSERT INTO memory_turns(
-                    conversation_id, run_id, original_question, contextualized_question,
+                    user_id, conversation_id, run_id, original_question, contextualized_question,
                     final_answer, intent, primary_domain, resolved_entities_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_id) DO NOTHING
-            """, (conversation_id, run_id, original_question, contextualized_question,
+            """, (user_id, conversation_id, run_id, original_question, contextualized_question,
                   final_answer, intent, primary_domain,
                   json.dumps({row["name"]: row["entity_id"] for row in entities}, ensure_ascii=False), now))
             if cursor.rowcount:
@@ -101,10 +218,10 @@ class SQLiteConversationMemoryRepository:
                 for entity in entities:
                     self._connection.execute("""
                         INSERT INTO memory_entities(
-                            conversation_id, entity_id, name, organization, title,
+                            user_id, conversation_id, entity_id, name, organization, title,
                             entity_type, mention_count, last_seen_turn, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
-                        ON CONFLICT(conversation_id, entity_id) DO UPDATE SET
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        ON CONFLICT(user_id, conversation_id, entity_id) DO UPDATE SET
                             name=excluded.name,
                             organization=COALESCE(excluded.organization, memory_entities.organization),
                             title=COALESCE(excluded.title, memory_entities.title),
@@ -112,34 +229,48 @@ class SQLiteConversationMemoryRepository:
                             mention_count=memory_entities.mention_count + 1,
                             last_seen_turn=excluded.last_seen_turn,
                             updated_at=excluded.updated_at
-                    """, (conversation_id, entity["entity_id"], entity["name"],
+                    """, (user_id, conversation_id, entity["entity_id"], entity["name"],
                           entity.get("organization"), entity.get("title"),
                           entity.get("entity_type", "scholar"), turn_id, now))
-        return self.get(conversation_id)
+        return self.get(user_id, conversation_id)
 
-    def get(self, conversation_id: str, turn_limit: int = 10) -> dict[str, Any]:
+    def exists(self, user_id: str, conversation_id: str) -> bool:
+        with self._lock:
+            row = self._connection.execute("""
+                SELECT 1 FROM memory_conversations
+                WHERE user_id=? AND conversation_id=?
+            """, (user_id, conversation_id)).fetchone()
+        return row is not None
+
+    def get(self, user_id: str, conversation_id: str, turn_limit: int = 10) -> dict[str, Any]:
         with self._lock:
             conversation = self._connection.execute(
-                "SELECT * FROM memory_conversations WHERE conversation_id=?", (conversation_id,)
+                """SELECT * FROM memory_conversations
+                   WHERE user_id=? AND conversation_id=?""",
+                (user_id, conversation_id),
             ).fetchone()
             if not conversation:
-                return {"conversation_id": conversation_id, "turn_count": 0, "entities": [], "turns": []}
+                return {"user_id": user_id, "conversation_id": conversation_id,
+                        "turn_count": 0, "entities": [], "turns": []}
             entities = self._connection.execute("""
                 SELECT entity_id, name, organization, title, entity_type, mention_count,
                        last_seen_turn, updated_at
-                FROM memory_entities WHERE conversation_id=?
+                FROM memory_entities WHERE user_id=? AND conversation_id=?
                 ORDER BY last_seen_turn DESC, mention_count DESC, entity_id
-            """, (conversation_id,)).fetchall()
+            """, (user_id, conversation_id)).fetchall()
             turns = self._connection.execute("""
                 SELECT run_id, original_question, contextualized_question, intent,
                        primary_domain, resolved_entities_json, created_at
-                FROM memory_turns WHERE conversation_id=?
+                FROM memory_turns WHERE user_id=? AND conversation_id=?
                 ORDER BY turn_id DESC LIMIT ?
-            """, (conversation_id, max(1, min(turn_limit, 50)))).fetchall()
+            """, (user_id, conversation_id, max(1, min(turn_limit, 50)))).fetchall()
             count = self._connection.execute(
-                "SELECT COUNT(*) FROM memory_turns WHERE conversation_id=?", (conversation_id,)
+                """SELECT COUNT(*) FROM memory_turns
+                   WHERE user_id=? AND conversation_id=?""",
+                (user_id, conversation_id),
             ).fetchone()[0]
         return {
+            "user_id": user_id,
             "conversation_id": conversation_id,
             "created_at": conversation["created_at"],
             "updated_at": conversation["updated_at"],
@@ -149,18 +280,41 @@ class SQLiteConversationMemoryRepository:
                       for row in turns],
         }
 
-    def clear(self, conversation_id: str) -> dict[str, int | str | bool]:
+    def clear(self, user_id: str, conversation_id: str) -> dict[str, int | str | bool]:
         with self._lock, self._connection:
             turn_count = int(self._connection.execute(
-                "SELECT COUNT(*) FROM memory_turns WHERE conversation_id=?", (conversation_id,)
+                """SELECT COUNT(*) FROM memory_turns
+                   WHERE user_id=? AND conversation_id=?""",
+                (user_id, conversation_id),
             ).fetchone()[0])
             entity_count = int(self._connection.execute(
-                "SELECT COUNT(*) FROM memory_entities WHERE conversation_id=?", (conversation_id,)
+                """SELECT COUNT(*) FROM memory_entities
+                   WHERE user_id=? AND conversation_id=?""",
+                (user_id, conversation_id),
             ).fetchone()[0])
-            self._connection.execute("DELETE FROM memory_turns WHERE conversation_id=?", (conversation_id,))
-            self._connection.execute("DELETE FROM memory_entities WHERE conversation_id=?", (conversation_id,))
-            self._connection.execute("DELETE FROM memory_conversations WHERE conversation_id=?", (conversation_id,))
-        return {"conversation_id": conversation_id, "cleared": True,
+            self._connection.execute(
+                "DELETE FROM memory_conversations WHERE user_id=? AND conversation_id=?",
+                (user_id, conversation_id),
+            )
+        return {"user_id": user_id, "conversation_id": conversation_id, "cleared": True,
+                "deleted_turns": turn_count, "deleted_entities": entity_count}
+
+    def clear_user_conversations(self, user_id: str) -> dict[str, int]:
+        with self._lock, self._connection:
+            conversation_count = int(self._connection.execute(
+                "SELECT COUNT(*) FROM memory_conversations WHERE user_id=?",
+                (user_id,),
+            ).fetchone()[0])
+            turn_count = int(self._connection.execute(
+                "SELECT COUNT(*) FROM memory_turns WHERE user_id=?", (user_id,)
+            ).fetchone()[0])
+            entity_count = int(self._connection.execute(
+                "SELECT COUNT(*) FROM memory_entities WHERE user_id=?", (user_id,)
+            ).fetchone()[0])
+            self._connection.execute(
+                "DELETE FROM memory_conversations WHERE user_id=?", (user_id,)
+            )
+        return {"deleted_conversations": conversation_count,
                 "deleted_turns": turn_count, "deleted_entities": entity_count}
 
     def close(self) -> None:

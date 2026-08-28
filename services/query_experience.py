@@ -5,41 +5,26 @@ import hashlib
 import json
 import re
 from difflib import SequenceMatcher
-from threading import Lock
 from typing import Any
 
 from graph.state import GraphRAGState
 from models.settings import Settings
-from repositories.query_experience_repository import SQLiteQueryExperienceRepository
+from services.memory_manager import memory_manager
 from services.observability import emit_event
 from services.telemetry import traced_span
 
-_repositories: dict[str, SQLiteQueryExperienceRepository] = {}
-_repository_lock = Lock()
 _SPACE_RE = re.compile(r"\s+")
 _PUNCTUATION_RE = re.compile(r"[，。！？；：、,.!?;:\"'“”‘’（）()\[\]{}]")
 _YEAR_RE = re.compile(r"(?<!\d)(?:19|20)\d{2}(?!\d)")
 _NUMBER_RE = re.compile(r"\d+")
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+_URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_SENSITIVE_RE = re.compile(
+    r"(?:password|passwd|api[_-]?key|access[_-]?token|secret|密码|密钥|令牌)\s*[:=：]",
+    re.IGNORECASE,
+)
 _RESULT_FIELDS = ("talent_result", "achievement_result", "enterprise_result",
                   "industry_result", "graph_result", "web_result")
-
-
-def query_experience_repository() -> SQLiteQueryExperienceRepository:
-    path = Settings.from_env().query_experience_db_path
-    with _repository_lock:
-        repository = _repositories.get(path)
-        if repository is None:
-            repository = SQLiteQueryExperienceRepository(path)
-            _repositories[path] = repository
-        return repository
-
-
-def close_query_experience() -> None:
-    with _repository_lock:
-        repositories = list(_repositories.values())
-        _repositories.clear()
-    for repository in repositories:
-        repository.close()
 
 
 def normalize_question(question: str) -> str:
@@ -48,7 +33,8 @@ def normalize_question(question: str) -> str:
 
 
 def query_template(question: str, mentions: list[str] | None = None) -> str:
-    text = normalize_question(question)
+    text = _URL_RE.sub("__url__", _EMAIL_RE.sub("__email__", question.strip().lower()))
+    text = normalize_question(text)
     ordered = sorted(
         {item.strip() for item in mentions or [] if item.strip()},
         key=lambda item: (-len(item), item),
@@ -61,15 +47,36 @@ def query_template(question: str, mentions: list[str] | None = None) -> str:
         placeholders.append((temporary, f"{{SCHOLAR_{index}}}"))
     text = _YEAR_RE.sub("{YEAR}", text)
     text = _NUMBER_RE.sub("{NUMBER}", text)
+    text = text.replace("__email__", "{EMAIL}").replace("__url__", "{URL}")
     for temporary, placeholder in placeholders:
         text = text.replace(temporary, placeholder)
     return text
 
 
-def pattern_id(scope_id: str, template: str) -> str:
-    digest = hashlib.sha256(json.dumps({"scope": scope_id, "template": template},
+def pattern_id(scope_type: str, scope_id: str, template: str) -> str:
+    digest = hashlib.sha256(json.dumps({"scope_type": scope_type, "scope": scope_id,
+                                       "template": template},
                                        ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     return f"exp-{digest[:20]}"
+
+
+def _event_id(scope_type: str, scope_id: str, run_id: str) -> str:
+    digest = hashlib.sha256(json.dumps({"scope_type": scope_type, "scope": scope_id,
+                                       "run_id": run_id},
+                                      ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return f"evt-{digest[:24]}"
+
+
+def _global_template(state: GraphRAGState, template: str) -> str | None:
+    """Return a globally shareable template or fail closed on sensitive text."""
+    if _SENSITIVE_RE.search(state.get("question", "")):
+        return None
+    redacted = _URL_RE.sub("{URL}", _EMAIL_RE.sub("{EMAIL}", template))
+    entity_names = set(state.get("resolved_entities", {})) | set(state.get("entity_mentions", []))
+    if any(name and normalize_question(name) in normalize_question(redacted)
+           for name in entity_names):
+        return None
+    return redacted
 
 
 def _bigrams(text: str) -> set[str]:
@@ -105,6 +112,7 @@ def recall_query_experience(state: GraphRAGState) -> dict[str, Any]:
         return {"experience_recall_status": "DISABLED", "experience_candidates": [],
                 "experience_match": None, "experience_strategy": {}}
     settings = Settings.from_env()
+    user_id = state.get("user_id")
     question = state.get("question", "")
     template = query_template(question, state.get("entity_mentions", []))
     with traced_span("memory.experience.recall", "memory", {
@@ -112,16 +120,26 @@ def recall_query_experience(state: GraphRAGState) -> dict[str, Any]:
         "experience.query_template": template,
     }) as span:
         candidates = []
-        for pattern in query_experience_repository().list_patterns(
-                settings.query_experience_scope_id, limit=settings.query_experience_candidate_limit,
-                positive_only=True):
-            similarity = template_similarity(template, pattern["query_template"])
-            if similarity < settings.query_experience_min_similarity:
-                continue
-            confidence, applicable = _pattern_score(pattern, similarity, settings)
-            candidates.append(pattern | {"similarity": similarity, "confidence": confidence,
-                                         "applicable": applicable})
-        candidates.sort(key=lambda row: (-row["confidence"], -row["success_count"], row["pattern_id"]))
+        scopes = ([('user', str(user_id))] if user_id else []) + [
+            ('global', settings.query_experience_scope_id)
+        ]
+        for scope_type, scope_id in scopes:
+            for pattern in memory_manager().list_experience_patterns(
+                    scope_type, scope_id, limit=settings.query_experience_candidate_limit,
+                    positive_only=True):
+                similarity = template_similarity(template, pattern["query_template"])
+                if similarity < settings.query_experience_min_similarity:
+                    continue
+                confidence, applicable = _pattern_score(pattern, similarity, settings)
+                candidates.append(pattern | {
+                    "similarity": similarity,
+                    "confidence": confidence,
+                    "applicable": applicable,
+                })
+        candidates.sort(key=lambda row: (
+            -row["confidence"], 0 if row["scope_type"] == "user" else 1,
+            -row["success_count"], row["pattern_id"],
+        ))
         candidates = candidates[:settings.query_experience_candidate_limit]
         match = candidates[0] if candidates else None
         if not match:
@@ -182,6 +200,12 @@ def write_query_experience(state: GraphRAGState) -> dict[str, Any]:
     if not state.get("experience_memory_enabled", True):
         emit_event("EXPERIENCE_WRITEBACK_SKIPPED", thread_id=state.get("thread_id"), reason="disabled")
         return {"experience_writeback_status": "DISABLED"}
+    user_id = state.get("user_id")
+    if not user_id:
+        emit_event("EXPERIENCE_WRITEBACK_SKIPPED", thread_id=state.get("thread_id"),
+                   reason="missing_user_scope")
+        return {"experience_writeback_status": "SKIPPED",
+                "experience_writeback_reason": "missing_user_scope"}
     validation = state.get("validation_result") or {}
     domain_errors = [error for field in _RESULT_FIELDS for error in (state.get(field) or {}).get("errors", [])]
     validation_pass = bool(validation.get("valid"))
@@ -202,9 +226,12 @@ def write_query_experience(state: GraphRAGState) -> dict[str, Any]:
         "workflow_version": settings.workflow_version, "prompt_version": settings.prompt_version,
         "model_name": settings.model_name,
     }
+    run_id = state.get("thread_id", "")
+    private_scope_id = str(user_id)
     event = {
-        "run_id": state.get("thread_id", ""), "scope_id": settings.query_experience_scope_id,
-        "pattern_id": pattern_id(settings.query_experience_scope_id, template),
+        "event_id": _event_id("user", private_scope_id, run_id),
+        "run_id": run_id, "scope_type": "user", "scope_id": private_scope_id,
+        "pattern_id": pattern_id("user", private_scope_id, template),
         "normalized_question": normalize_question(state.get("question", "")),
         "query_template": template, "strategy": strategy,
         "outcome": "SUCCESS" if eligible else "NEGATIVE", "eligible": eligible,
@@ -214,13 +241,31 @@ def write_query_experience(state: GraphRAGState) -> dict[str, Any]:
         "run.id": state.get("thread_id"), "experience.pattern_id": event["pattern_id"],
         "experience.eligible": eligible,
     }):
-        written = query_experience_repository().record(event)
+        written = memory_manager().record_experience(event)
+        global_written = False
+        shareable_template = _global_template(state, template)
+        if eligible and shareable_template:
+            global_scope_id = settings.query_experience_scope_id
+            global_event = event | {
+                "event_id": _event_id("global", global_scope_id, run_id),
+                "scope_type": "global",
+                "scope_id": global_scope_id,
+                "pattern_id": pattern_id("global", global_scope_id, shareable_template),
+                # Global experience never stores the user's normalized raw question.
+                "normalized_question": shareable_template,
+                "query_template": shareable_template,
+            }
+            global_written = memory_manager().record_experience(global_event)
     event_name = "EXPERIENCE_WRITTEN" if written else "EXPERIENCE_WRITEBACK_SKIPPED"
     emit_event(event_name, thread_id=state.get("thread_id"), pattern_id=event["pattern_id"],
+               scope_type="user", scope_id=private_scope_id,
                eligible=eligible, outcome=event["outcome"], quality_score=quality,
                reason=None if written else "duplicate_run")
-    pattern = query_experience_repository().get_pattern(event["pattern_id"])
+    pattern = memory_manager().get_experience_pattern(event["pattern_id"])
     return {"experience_writeback_status": "WRITTEN" if written else "DUPLICATE",
+            "experience_global_writeback_status": (
+                "WRITTEN" if global_written else "SKIPPED"
+            ),
             "experience_pattern": pattern}
 
 
@@ -230,16 +275,44 @@ def finalize_query_experience_metrics(run_id: str) -> None:
         from services.telemetry import repository as observability_repository
         trace = observability_repository().get_run(run_id)
         if trace:
-            query_experience_repository().finalize_metrics(run_id, trace["summary"])
+            memory_manager().finalize_experience_metrics(run_id, trace["summary"])
     except Exception:
         # Metrics enrichment must never change the user-visible query outcome.
         return
 
 
-def query_experience_stats() -> dict[str, Any]:
+def query_experience_stats(user_id: str) -> dict[str, Any]:
     settings = Settings.from_env()
-    return query_experience_repository().stats(settings.query_experience_scope_id) | {
-        "scope_id": settings.query_experience_scope_id,
+    manager = memory_manager()
+    private = manager.experience_stats("user", user_id)
+    global_stats = manager.experience_stats("global", settings.query_experience_scope_id)
+    combined = {
+        key: private[key] + global_stats[key]
+        for key in ("pattern_count", "event_count", "success_count", "failure_count")
+    }
+    pattern_count = combined["pattern_count"]
+    combined["average_quality"] = round(
+        (
+            private["average_quality"] * private["pattern_count"]
+            + global_stats["average_quality"] * global_stats["pattern_count"]
+        ) / pattern_count,
+        6,
+    ) if pattern_count else 0.0
+    combined["average_duration_ms"] = round(
+        (
+            private["average_duration_ms"] * private["pattern_count"]
+            + global_stats["average_duration_ms"] * global_stats["pattern_count"]
+        ) / pattern_count,
+        6,
+    ) if pattern_count else 0.0
+    combined["total_cost"] = round(
+        private["total_cost"] + global_stats["total_cost"], 8
+    )
+    return combined | {
+        "private": private,
+        "global": global_stats,
+        "user_id": user_id,
+        "global_scope_id": settings.query_experience_scope_id,
         "mode": settings.query_experience_mode,
         "min_samples": settings.query_experience_min_samples,
         "min_similarity": settings.query_experience_min_similarity,
