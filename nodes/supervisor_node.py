@@ -42,7 +42,10 @@ def _guard_complex_plan(question: str, plan, is_replan: bool, web_search_enabled
         required.append("enterprise_agent")
     if any(word in question for word in ("产业链", "产业节点", "产业事件", "产业全景")):
         required.append("industry_agent")
-    if any(word in question for word in ("间接关系", "多跳", "路径", "邻居", "关系强度", "局部子图")):
+    if any(word in question for word in (
+        "间接关系", "多跳", "路径", "邻居", "关系强度", "局部子图",
+        "图统计", "图聚合", "图 Schema", "图Schema", "图模式", "图谱结构",
+    )):
         required.append("graph_reasoning_agent")
     if web_search_enabled and any(word in question for word in ("联网", "网络搜索", "外部来源", "公开资料", "官网", "新闻", "最新", "近期", "实时", "查证")):
         required.append("web_research_agent")

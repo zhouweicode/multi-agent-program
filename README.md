@@ -45,14 +45,14 @@
 | ResearchAchievementAgent | `get_author_papers`、`get_common_papers`、`get_common_projects`、`get_person_patents`、`get_common_patents`、`aggregate_cooperation` |
 | EnterpriseRelationAgent | `get_person_company_roles`、`get_company_projects`、`get_company_patents` |
 | IndustryChainAgent | `get_chain_structure`、`get_node_companies`、`get_node_events`、`rank_top_events` |
-| GraphReasoningAgent | `get_neighbors`、`find_path`、`k_hop_expand`、`calculate_path_strength` |
+| GraphReasoningAgent | 基础：`get_neighbors`、`find_path`、`k_hop_expand`、`calculate_path_strength`；高级：`get_neighbors_filtered`、`find_paths`、`query_subgraph`、`aggregate_graph`、`get_graph_schema` |
 | WebResearchAgent | `search_web`（Brave/Tavily，可通过 local 或 MCP 调用） |
 | VerificationAgent | `verify_evidence`、`check_source`、`get_cooperation_timeline`、`validate_relation`、`check_constraints` |
 
 ## 第五阶段数据仓储
 
 - `MySQLRepository`：只读接入 `gkx.dwd_scholar`、论文、项目和专利表，支持学者、任职、教育、单人/共同论文、共同项目及单人/共同专利查询。
-- `Neo4jGraphRepository`：只读实现一跳邻居、最短路径、K 跳扩展和路径强度。
+- `Neo4jGraphRepository`：只读实现一跳邻居、Top-K 路径、K 跳扩展、受限子图、图聚合和路径强度；所有动态 Label、关系和属性先经过治理 Schema 白名单，值仅通过参数传入。
 - `EntityService`、`AchievementService`、`GraphService` 负责选择 Repository；Agent 与 Tool Schema 无须感知底层数据库。
 - 三类后端可独立切换；当前本地配置默认实体检索为 Milvus，科研成果和图查询仍可保持 Mock。自动化测试强制使用轻量 Mock，不要求数据库在线。
 

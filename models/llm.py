@@ -7,7 +7,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from models.contracts import DEFAULT_REQUIRED_FACT_TYPES
+from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
 from models.schemas import PlannedTask, RouterOutput, SupervisorPlan
 from models.settings import Settings
 from services.telemetry import telemetry_callback
@@ -22,7 +22,10 @@ class MockStructuredModel:
             "talent": any(x in question for x in ("职业", "任职", "工作", "单位", "同事", "校友")),
             "enterprise": any(x in question for x in ("企业", "公司", "顾问")),
             "industry": any(x in question for x in ("产业链", "产业事件", "TOP", "节点")),
-            "graph": any(x in question for x in ("间接关系", "多跳", "路径", "邻居", "关系强度")),
+            "graph": any(x in question for x in (
+                "间接关系", "多跳", "路径", "邻居", "关系强度", "子图",
+                "图统计", "图聚合", "图 Schema", "图Schema", "图模式", "图谱结构",
+            )),
             "web": any(x in question for x in ("联网", "网络搜索", "外部来源", "公开资料", "官网", "新闻", "最新", "近期", "实时", "查证")),
         }
         matched = [name for name, hit in domain_hits.items() if hit]
@@ -49,7 +52,7 @@ class MockStructuredModel:
         is_replan = bool(validation_result or verification_result)
         tasks = [PlannedTask(task_id=f"{'replan' if is_replan else 'task'}_{domain}", agent=agent,
                              goal=(goal + (f"；重点补充：{'、'.join(missing_evidence)}" if missing_evidence else "")),
-                             required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
+                             required_fact_types=required_fact_types(agent, question),
                              required_entity_ids=list(resolved_entities.values()))
                  for domain, agent, goal, keywords in specs
                  if (domain in missing_domains or (missing_evidence and domain == "achievement") or
@@ -115,6 +118,60 @@ class MockToolCallingModel:
                 ("get_common_projects", {"entity_ids": entity_ids}),
                 ("aggregate_cooperation", {"entity_ids": entity_ids}),
             ]
+        graph_entity = entity_ids[0] if entity_ids else "person_zw_001"
+        graph_target = entity_ids[1] if len(entity_ids) >= 2 else "node_model"
+        if any(word in goal for word in ("图 Schema", "图Schema", "图模式", "图谱结构", "可查询标签", "可查询关系", "可查询属性")):
+            graph_specs = [("get_graph_schema", {})]
+        elif any(word in goal for word in ("图统计", "图聚合", "分组统计", "去重统计", "数量排名")):
+            if any(word in goal for word in ("关系", "合作", "COAUTHOR")):
+                graph_specs = [("aggregate_graph", {
+                    "source_label": "Scholar",
+                    "relation_type": "COAUTHOR",
+                    "target_label": "Scholar",
+                    "direction": "out",
+                    "group_by": [{"scope": "source", "field": "scholar_id", "alias": "scholar_id"}],
+                    "metrics": [{"operation": "count", "alias": "relation_count"}],
+                    "order_by": [{"field": "relation_count", "direction": "desc"}],
+                })]
+            else:
+                graph_specs = [("aggregate_graph", {
+                    "source_label": "Scholar",
+                    "metrics": [{"operation": "count", "alias": "scholar_count"}],
+                })]
+        elif any(word in goal for word in ("局部子图", "查询子图", "返回子图")):
+            graph_specs = [("query_subgraph", {
+                "seed_entity_ids": entity_ids or [graph_entity],
+                "max_hops": 2,
+                "max_nodes": 100,
+                "max_edges": 200,
+            })]
+        elif any(word in goal for word in ("Top-K", "top-k", "多条路径", "加权路径", "最短路径", "路径排名")):
+            graph_specs = [("find_paths", {
+                "source_id": graph_entity,
+                "target_id": graph_target,
+                "max_hops": 4,
+                "top_k": 3,
+                "ranking": "weight" if "加权" in goal else "shortest",
+            })]
+        elif any(word in goal for word in ("过滤邻居", "筛选邻居", "关系过滤", "方向过滤", "一跳筛选")):
+            graph_specs = [("get_neighbors_filtered", {
+                "entity_id": graph_entity,
+                "relation_types": ["COAUTHOR"] if any(word in goal for word in ("合作", "COAUTHOR")) else [],
+                "target_labels": ["Scholar"] if "专家" in goal else [],
+                "direction": "out" if any(word in goal for word in ("出向", "出边")) else (
+                    "in" if any(word in goal for word in ("入向", "入边")) else "both"
+                ),
+            })]
+        else:
+            graph_specs = [
+                ("get_neighbors", {"entity_id": graph_entity}),
+                ("find_path", {"source_id": graph_entity, "target_id": graph_target})
+                if len(entity_ids) >= 2
+                else ("k_hop_expand", {"entity_id": graph_entity, "k": 2}),
+                ("calculate_path_strength", {"source_id": graph_entity, "target_id": graph_target})
+                if len(entity_ids) >= 2
+                else ("k_hop_expand", {"entity_id": graph_entity, "k": 2}),
+            ]
         call_specs = {
             "talent": talent_specs,
             "achievement": achievement_specs,
@@ -125,9 +182,7 @@ class MockToolCallingModel:
                          ("get_node_companies", {"node_id": "node_model"}),
                          ("get_node_events", {"node_id": "node_model"}),
                          ("rank_top_events", {"node_id": "node_model", "top_n": 5 if "产业全景报告" in goal else 2})],
-            "graph": [("get_neighbors", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001"}),
-                      ("find_path", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2}),
-                      ("calculate_path_strength", {"source_id": entity_ids[0], "target_id": entity_ids[1]}) if len(entity_ids) >= 2 else ("k_hop_expand", {"entity_id": entity_ids[0] if entity_ids else "person_zw_001", "k": 2})],
+            "graph": graph_specs,
             "web": [("search_web", {"query": goal, "max_results": 5})],
         }
         completed = len([msg for msg in messages if isinstance(msg, ToolMessage)])

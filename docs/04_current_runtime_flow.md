@@ -225,7 +225,7 @@ Router
 - `AchievementAgent`：论文、项目和科研合作；
 - `EnterpriseRelationAgent`：企业角色、项目和专利；
 - `IndustryChainAgent`：产业链结构、企业和事件；
-- `GraphReasoningAgent`：邻居、路径、K 跳和路径强度。
+- `GraphReasoningAgent`：邻居过滤、Top-K 路径、K 跳、受限子图、图聚合、治理 Schema 和路径强度。
 
 真正的循环位于 `agents/base.py::ToolCallingDomainAgent.run()`：
 

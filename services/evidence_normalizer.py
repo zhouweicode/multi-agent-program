@@ -26,7 +26,12 @@ FACT_TYPES = {
     "get_node_events": "industry_event",
     "rank_top_events": "industry_event",
     "get_neighbors": "graph_relation",
+    "get_neighbors_filtered": "graph_relation",
     "find_path": "graph_path",
+    "find_paths": "graph_path",
+    "query_subgraph": "graph_subgraph",
+    "aggregate_graph": "graph_aggregate",
+    "get_graph_schema": "graph_schema",
     "calculate_path_strength": "graph_path_strength",
     "search_web": "external_web_source",
 }
@@ -103,6 +108,15 @@ def normalize_tool_output(tool_name: str, output: Any, fallback_entity_ids: list
     if tool_name in {"find_path", "calculate_path_strength"} and isinstance(output, dict):
         path = output.get("path", output)
         rows = path.get("edges", []) if isinstance(path, dict) else []
+    elif tool_name == "find_paths" and isinstance(output, dict):
+        rows = [
+            edge
+            for path in output.get("paths", [])
+            if isinstance(path, dict)
+            for edge in path.get("edges", [])
+        ]
+    elif tool_name == "query_subgraph" and isinstance(output, dict):
+        rows = output.get("edges", [])
     records: list[dict] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -112,7 +126,7 @@ def normalize_tool_output(tool_name: str, output: Any, fallback_entity_ids: list
                 and not row.get("error"):
             record_id = _record_id(row, "unknown")
             evidence_id = "derived_" + hashlib.sha256(
-                f"{tool_name}:{record_id}".encode("utf-8")
+                f"{tool_name}:{record_id}".encode()
             ).hexdigest()[:20]
             ids = [evidence_id]
             row = dict(row) | {"evidence_id": evidence_id}

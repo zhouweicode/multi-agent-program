@@ -14,7 +14,7 @@ from tools.registry import ToolRegistry, tool_registry
 
 
 def test_registry_contains_all_domain_tools_and_stable_contracts():
-    assert len(tool_registry.list()) == 28
+    assert len(tool_registry.list()) == 33
     assert set(tool_registry.agent_domains.values()) == {
         "talent",
         "achievement",
@@ -27,6 +27,15 @@ def test_registry_contains_all_domain_tools_and_stable_contracts():
     assert tool_registry.fact_type_to_tool["common_papers"] == "get_common_papers"
     assert tool_registry.get("search_web").trust_level == "remote_content"
     assert tool_registry.get("search_web").open_world is True
+    assert set(tool_registry.tool_names("graph")) >= {
+        "get_neighbors_filtered",
+        "find_paths",
+        "query_subgraph",
+        "aggregate_graph",
+        "get_graph_schema",
+    }
+    assert tool_registry.fact_type_to_tool["ranked_paths"] == "find_paths"
+    assert tool_registry.fact_type_to_tool["graph_schema"] == "get_graph_schema"
 
 
 def test_legacy_contract_exports_are_derived_from_registry():

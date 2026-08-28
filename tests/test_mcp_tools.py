@@ -25,15 +25,21 @@ def test_mcp_server_exposes_reusable_capabilities():
     import asyncio
 
     tools = asyncio.run(inspect_server())
-    assert len(tools) == 28
+    assert len(tools) == 33
     assert {
         "get_person_profile",
         "get_author_papers",
         "find_path",
+        "find_paths",
+        "get_graph_schema",
         "verify_evidence",
         "search_web",
     } <= set(tools)
     assert tools["find_path"].meta["domain"] == "graph"
+    assert tools["get_graph_schema"].meta == {
+        "domain": "graph",
+        "control_plane": True,
+    }
     assert tools["search_web"].meta == {"domain": "web", "open_world": True}
 
 
@@ -45,6 +51,28 @@ def test_mcp_langchain_adapter_preserves_schema_and_result():
     assert "entity_id" in remote[0].args
     assert remote[0].metadata["tool_transport"] == "mcp"
     assert remote[0].invoke({"entity_id": "person_zw_001"})["name"] == "张伟"
+
+
+def test_mcp_adapter_preserves_nested_graph_query_schema(monkeypatch):
+    monkeypatch.setenv("GRAPH_BACKEND", "mock")
+    remote = build_langchain_mcp_tools(
+        mcp, ["find_paths", "aggregate_graph"], use_discovery_cache=False
+    )
+    assert "top_k" in remote[0].args
+    assert remote[0].invoke(
+        {
+            "source_id": "person_zw_001",
+            "target_id": "node_model",
+            "top_k": 2,
+        }
+    )["path_count"] == 2
+    aggregate = remote[1].invoke(
+        {
+            "source_label": "Scholar",
+            "metrics": [{"operation": "count", "alias": "scholar_count"}],
+        }
+    )
+    assert aggregate["rows"] == [{"scholar_count": 2}]
 
 
 def test_tool_provider_switches_transport_without_expanding_agent_allowlist():

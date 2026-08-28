@@ -15,7 +15,7 @@ MCP Server对外提供七组能力：
 | `achievement` | 论文、项目、专利和合作聚合 | AchievementAgent |
 | `enterprise` | 企业角色、企业项目和企业专利 | EnterpriseAgent |
 | `industry` | 产业节点、企业和事件 | IndustryAgent |
-| `graph` | 邻居、路径、K跳和路径强度 | GraphReasoningAgent |
+| `graph` | 邻居过滤、Top-K路径、K跳、受限子图、聚合、Schema和路径强度 | GraphReasoningAgent |
 | `verification` | 证据、来源、时间线、关系和约束验证 | VerificationAgent |
 | `web` | Brave/Tavily公开网页搜索 | `WebResearchAgent` |
 

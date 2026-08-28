@@ -1,8 +1,14 @@
 """仓储切换测试不依赖本机数据库，CI 默认仍可直接运行。"""
+from models.graph_queries import (
+    AggregateGraphInput,
+    FilteredNeighborsInput,
+    FindPathsInput,
+    QuerySubgraphInput,
+)
+from repositories.mysql_repository import MySQLRepository
 from services.achievement_service import AchievementService
 from services.entity_service import EntityService
 from services.graph_service import GraphService
-from repositories.mysql_repository import MySQLRepository
 
 
 class FakeMySQLRepository:
@@ -35,6 +41,33 @@ class FakeNeo4jRepository:
     def calculate_path_strength(self, source_id, target_id):
         return {"source_id": source_id, "target_id": target_id, "strength": 0.8, "path": self.find_path(source_id, target_id)}
 
+    def get_neighbors_filtered(self, query: FilteredNeighborsInput):
+        return self.get_neighbors(query.entity_id)[: query.limit]
+
+    def find_paths(self, query: FindPathsInput):
+        path = self.find_path(query.source_id, query.target_id, query.max_hops)
+        return {
+            "found": path["found"],
+            "source_id": query.source_id,
+            "target_id": query.target_id,
+            "path_count": 1,
+            "ranking": query.ranking,
+            "paths": [path],
+        }
+
+    def query_subgraph(self, query: QuerySubgraphInput):
+        return {
+            "seed_entity_ids": query.seed_entity_ids,
+            "nodes": [{"entity_id": item} for item in query.seed_entity_ids],
+            "edges": [],
+            "node_count": len(query.seed_entity_ids),
+            "edge_count": 0,
+            "truncated": False,
+        }
+
+    def aggregate_graph(self, query: AggregateGraphInput):
+        return {"rows": [{query.metrics[0].alias: 2}], "row_count": 1, "truncated": False}
+
 
 def test_entity_service_delegates_to_mysql_repository():
     service = EntityService(FakeMySQLRepository())
@@ -52,12 +85,24 @@ def test_achievement_service_delegates_common_papers():
     assert rows[0]["authors"] == ["mysql_001", "mysql_002"]
 
 
-def test_graph_service_delegates_four_operations():
+def test_graph_service_delegates_all_query_operations():
     service = GraphService(FakeNeo4jRepository())
     assert service.get_neighbors("SCH001")[0]["entity_id"] == "SCH002"
     assert service.find_path("SCH001", "SCH002")["hop_count"] == 1
     assert service.k_hop_expand("SCH001", 2)["levels"][0]["entity_ids"] == ["SCH002"]
     assert service.calculate_path_strength("SCH001", "SCH002")["strength"] == 0.8
+    filtered = FilteredNeighborsInput(entity_id="SCH001")
+    assert service.get_neighbors_filtered(filtered)[0]["entity_id"] == "SCH002"
+    paths = FindPathsInput(source_id="SCH001", target_id="SCH002")
+    assert service.find_paths(paths)["path_count"] == 1
+    subgraph = QuerySubgraphInput(seed_entity_ids=["SCH001"])
+    assert service.query_subgraph(subgraph)["node_count"] == 1
+    aggregate = AggregateGraphInput(
+        source_label="Scholar",
+        metrics=[{"operation": "count", "alias": "scholar_count"}],
+    )
+    assert service.aggregate_graph(aggregate)["rows"] == [{"scholar_count": 2}]
+    assert service.get_graph_schema()["read_only"] is True
 
 
 def test_default_services_keep_mock_backend(monkeypatch):

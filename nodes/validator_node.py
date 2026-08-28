@@ -6,6 +6,7 @@ from models.contracts import (
     AGENT_DOMAINS,
     DEFAULT_REQUIRED_FACT_TYPES,
     FACT_TYPE_TO_TOOL,
+    required_fact_types,
 )
 from models.schemas import ValidationResult
 from services.observability import emit_event
@@ -52,8 +53,8 @@ def validator_node(state: GraphRAGState) -> dict:
         if not result:
             continue
         returned_tools = {fact.get("tool") for fact in result.get("facts", [])}
-        required_fact_types = task.get("required_fact_types") or DEFAULT_REQUIRED_FACT_TYPES[task["agent"]]
-        missing_facts = [fact_type for fact_type in required_fact_types
+        task_fact_types = task.get("required_fact_types") or DEFAULT_REQUIRED_FACT_TYPES[task["agent"]]
+        missing_facts = [fact_type for fact_type in task_fact_types
                          if FACT_TYPE_TO_TOOL.get(fact_type) not in returned_tools]
         expected_entities = set(task.get("required_entity_ids", []))
         if expected_entities and expected_entities != entity_ids:
@@ -67,6 +68,26 @@ def validator_node(state: GraphRAGState) -> dict:
                 errors.append(message)
                 if domain not in missing:
                     missing.append(domain)
+    # Simple 查询不经过 Supervisor，因此没有 PlannedTask。高级图查询仍按问题语义
+    # 执行确定性 FactType 验收，避免 Agent 返回任意一个图工具就被视为成功。
+    if (
+        not state.get("tasks")
+        and state.get("primary_domain") == "graph"
+        and state.get("graph_result")
+    ):
+        returned_tools = {
+            fact.get("tool") for fact in state["graph_result"].get("facts", [])
+        }
+        expected = required_fact_types("graph_reasoning_agent", state["question"])
+        missing_facts = [
+            fact_type
+            for fact_type in expected
+            if FACT_TYPE_TO_TOOL.get(fact_type) not in returned_tools
+        ]
+        if missing_facts:
+            errors.append(
+                "简单图查询验收失败：缺少事实类型 " + ", ".join(missing_facts)
+            )
     for item in state.get("evidence", []):
         # 新版证据携带原始事实快照，可在不重复访问数据库的情况下做确定性校验。
         complete = all(item.get(key) not in (None, "") for key in

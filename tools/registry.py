@@ -21,10 +21,15 @@ from tools.enterprise_tools import (
     get_person_company_roles,
 )
 from tools.graph_tools import (
+    aggregate_graph,
     calculate_path_strength,
     find_path,
+    find_paths,
+    get_graph_schema,
     get_neighbors,
+    get_neighbors_filtered,
     k_hop_expand,
+    query_subgraph,
 )
 from tools.industry_tools import (
     get_chain_structure,
@@ -290,6 +295,41 @@ CAPABILITY_SPECS = (
         "为产业全景报告搜索与目标产业直接相关的公开网页候选证据",
         ("web_sources",),
     ),
+    CapabilitySpec(
+        "graph_filtered_traversal",
+        "graph_reasoning_agent",
+        "graph",
+        "按关系、方向、时间、权重和属性约束精确查询实体邻居",
+        ("filtered_neighbors",),
+    ),
+    CapabilitySpec(
+        "graph_path_analysis",
+        "graph_reasoning_agent",
+        "graph",
+        "查询并比较实体间 Top-K 最短或高权重路径",
+        ("ranked_paths",),
+    ),
+    CapabilitySpec(
+        "graph_subgraph_analysis",
+        "graph_reasoning_agent",
+        "graph",
+        "围绕种子实体取得规模受限的局部子图",
+        ("bounded_subgraph",),
+    ),
+    CapabilitySpec(
+        "graph_aggregation",
+        "graph_reasoning_agent",
+        "graph",
+        "在治理 Schema 内执行图统计、分组、去重和排序",
+        ("graph_aggregation",),
+    ),
+    CapabilitySpec(
+        "graph_schema_discovery",
+        "graph_reasoning_agent",
+        "graph",
+        "读取允许 Planner 使用的图 Label、关系、属性和查询上限",
+        ("graph_schema",),
+    ),
 )
 
 
@@ -454,6 +494,46 @@ TOOL_SPECS = (
         "graph_reasoning_agent",
         calculate_path_strength,
         ("path_strength",),
+    ),
+    ToolSpec(
+        "get_neighbors_filtered",
+        "graph",
+        "graph_reasoning_agent",
+        get_neighbors_filtered,
+        ("filtered_neighbors",),
+        ("graph_filtered_traversal",),
+    ),
+    ToolSpec(
+        "find_paths",
+        "graph",
+        "graph_reasoning_agent",
+        find_paths,
+        ("ranked_paths",),
+        ("graph_path_analysis",),
+    ),
+    ToolSpec(
+        "query_subgraph",
+        "graph",
+        "graph_reasoning_agent",
+        query_subgraph,
+        ("bounded_subgraph",),
+        ("graph_subgraph_analysis",),
+    ),
+    ToolSpec(
+        "aggregate_graph",
+        "graph",
+        "graph_reasoning_agent",
+        aggregate_graph,
+        ("graph_aggregation",),
+        ("graph_aggregation",),
+    ),
+    ToolSpec(
+        "get_graph_schema",
+        "graph",
+        "graph_reasoning_agent",
+        get_graph_schema,
+        ("graph_schema",),
+        ("graph_schema_discovery",),
     ),
     ToolSpec(
         "verify_evidence",

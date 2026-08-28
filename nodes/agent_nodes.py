@@ -50,7 +50,10 @@ def industry_agent_node(state: GraphRAGState) -> dict:
 
 
 def graph_reasoning_agent_node(state: GraphRAGState) -> dict:
-    result = build_graph_reasoning_agent().run(_goal(state, "graph_reasoning_agent"), state.get("resolved_entities", {}),
+    goal = _goal(state, "graph_reasoning_agent")
+    if _task(state, "graph_reasoning_agent") and state["question"] not in goal:
+        goal = f"{goal}；必须回答的用户原始问题：{state['question']}"
+    result = build_graph_reasoning_agent().run(goal, state.get("resolved_entities", {}),
                                                state.get("thread_id"), state.get("long_term_memory_prompt"))
     return _update(state, "graph_reasoning_agent", "graph_result", result)
 
