@@ -18,6 +18,7 @@ from models.settings import Settings
 from services.observability import emit_event
 from services.run_control import raise_if_stopped
 from services.telemetry import traced_span
+from tools.governance import build_tool_receipt, sanitize_remote_result
 
 
 def _env_prefix(agent_name: str) -> str:
@@ -234,6 +235,59 @@ class LoopDetectionMiddleware(HarnessMiddleware):
         history.append(fingerprint)
 
 
+class ToolGovernanceMiddleware(HarnessMiddleware):
+    """规范工具身份、清洗远程内容并生成不含原文的调用回执。"""
+
+    def __init__(self, tools: dict[str, Any]):
+        self.tools = tools
+
+    def _govern(self, call: dict[str, Any], observation: dict[str, Any]) -> None:
+        visible_name = str(call.get("name") or "unknown")
+        tool = self.tools.get(visible_name)
+        metadata = dict(getattr(tool, "metadata", None) or {})
+        canonical_name = str(metadata.get("canonical_tool_name") or visible_name)
+        should_sanitize = (
+            metadata.get("tool_transport") == "mcp"
+            or metadata.get("trust_level") == "remote_content"
+        )
+        sanitization = None
+        raw_output = observation.get("data")
+        if should_sanitize:
+            observation["data"], sanitization = sanitize_remote_result(
+                observation.get("data")
+            )
+        observation["tool"] = canonical_name
+        observation["visible_tool"] = visible_name
+        observation["source_metadata"] = {
+            "transport": metadata.get("tool_transport", "local"),
+            "source": metadata.get("tool_source", "local:repository"),
+            "server_name": metadata.get("mcp_server_name"),
+            "trust_level": metadata.get("trust_level", "internal"),
+        }
+        observation["receipt"] = build_tool_receipt(
+            visible_name=visible_name,
+            canonical_name=canonical_name,
+            arguments=call.get("args", {}),
+            output=observation.get("data"),
+            raw_output=raw_output,
+            success=bool(observation.get("success")),
+            attempts=int(observation.get("attempts") or 0),
+            duration_ms=float(observation.get("duration_ms") or 0),
+            metadata=metadata,
+            sanitization=sanitization,
+        )
+
+    def after_tool(
+        self, context: HarnessContext, call: dict[str, Any], observation: dict[str, Any]
+    ) -> None:
+        self._govern(call, observation)
+
+    def on_tool_error(
+        self, context: HarnessContext, call: dict[str, Any], observation: dict[str, Any]
+    ) -> None:
+        self._govern(call, observation)
+
+
 class ToolErrorCategory(str, Enum):
     UNAUTHORIZED = "UNAUTHORIZED"
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
@@ -419,7 +473,9 @@ class AgentHarness:
             BudgetMiddleware(),
             LoopDetectionMiddleware(),
         ]
-        self.middleware = MiddlewareChain(defaults + list(middleware or []))
+        self.middleware = MiddlewareChain(
+            defaults + list(middleware or []) + [ToolGovernanceMiddleware(self.tools)]
+        )
         self.tool_executor = tool_executor or ToolExecutor()
 
     @staticmethod
@@ -545,8 +601,17 @@ class AgentHarness:
                         )
                         continue
 
+                    selected_tool = self.tools.get(call["name"])
+                    selected_metadata = dict(
+                        getattr(selected_tool, "metadata", None) or {}
+                    )
+                    canonical_name = str(
+                        selected_metadata.get("canonical_tool_name") or call["name"]
+                    )
                     calls.append(
-                        ToolCallSpec(name=call["name"], arguments=call.get("args", {}))
+                        ToolCallSpec(
+                            name=canonical_name, arguments=call.get("args", {})
+                        )
                     )
                     context.metrics.tool_calls = len(calls)
                     try:
@@ -582,7 +647,7 @@ class AgentHarness:
                         loop_stopped = True
                         break
 
-                    tool = self.tools.get(call["name"])
+                    tool = selected_tool
                     emit_event(
                         "AGENT_TOOL_CALLED",
                         thread_id=thread_id,
@@ -654,6 +719,7 @@ class AgentHarness:
                     }
                     observations.append(observation)
                     if execution.success:
+                        self.middleware.call("after_tool", context, call, observation)
                         emit_event(
                             "AGENT_TOOL_COMPLETED",
                             thread_id=thread_id,
@@ -662,16 +728,27 @@ class AgentHarness:
                             step=step,
                             attempts=execution.attempts,
                             duration_ms=round(execution.duration_ms, 2),
-                            result_count=len(execution.output)
-                            if isinstance(execution.output, list)
+                            result_count=len(observation["data"])
+                            if isinstance(observation["data"], list)
                             else 1,
-                            tool_output=execution.output,
+                            canonical_tool_name=observation["tool"],
+                            tool_source=observation["source_metadata"]["source"],
+                            receipt_id=observation["receipt"]["receipt_id"],
+                            tool_output=observation["data"],
                         )
-                        self.middleware.call("after_tool", context, call, observation)
                     else:
                         category = execution.category or ToolErrorCategory.TOOL_ERROR
+                        self.middleware.call(
+                            "on_tool_error", context, call, observation
+                        )
+                        safe_data = observation.get("data")
+                        safe_message = (
+                            safe_data.get("message")
+                            if isinstance(safe_data, dict)
+                            else str(safe_data)
+                        ) or execution.message
                         errors.append(
-                            f"{call['name']}: [{category.value}] {execution.message}"
+                            f"{call['name']}: [{category.value}] {safe_message}"
                         )
                         event = (
                             "AGENT_TOOL_TIMED_OUT"
@@ -686,14 +763,14 @@ class AgentHarness:
                             step=step,
                             attempts=execution.attempts,
                             error_category=category.value,
-                            error=execution.message,
-                        )
-                        self.middleware.call(
-                            "on_tool_error", context, call, observation
+                            error=safe_message,
+                            canonical_tool_name=observation["tool"],
+                            tool_source=observation["source_metadata"]["source"],
+                            receipt_id=observation["receipt"]["receipt_id"],
                         )
 
                     compressed, was_compressed, original_chars = compress_observation(
-                        execution.output,
+                        observation["data"],
                         self.config.observation_max_chars,
                         self.config.observation_max_items,
                     )

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from mcp_runtime.config import MCPServerConfig, parse_mcp_servers, parse_transport_overrides
 
 # 所有入口（FastAPI、demo、测试脚本）导入统一配置层时自动加载项目根目录 .env。
 # override=False 保证终端、容器和部署平台显式注入的环境变量拥有更高优先级。
@@ -81,6 +82,8 @@ class Settings:
     mcp_server_host: str = "127.0.0.1"
     mcp_server_port: int = 8100
     mcp_server_path: str = "/mcp"
+    mcp_servers: tuple[MCPServerConfig, ...] = ()
+    tool_transport_overrides: tuple[tuple[str, str], ...] = ()
     web_search_provider: str = "disabled"
     web_search_api_key: str | None = None
     web_search_endpoint: str | None = None
@@ -118,6 +121,41 @@ class Settings:
     model_input_cost_per_million: float = 0
     model_output_cost_per_million: float = 0
     model_cost_currency: str = "USD"
+
+    def tool_transport_for(self, domain: str) -> str:
+        overrides = dict(self.tool_transport_overrides)
+        if domain in overrides:
+            transport = overrides[domain]
+        elif domain == "web" and any(
+            item.enabled and (not item.domains or "web" in item.domains)
+            for item in self.mcp_servers
+        ):
+            # 显式配置外部 Web MCP 后优先试用；override=local 可精确关闭。
+            transport = "mcp"
+        else:
+            transport = self.tool_transport
+        if transport not in {"local", "mcp"}:
+            raise ValueError(f"领域 {domain} 的 Tool 传输只能是 local 或 mcp")
+        return transport
+
+    def resolved_mcp_servers(self) -> tuple[MCPServerConfig, ...]:
+        if self.mcp_servers:
+            return self.mcp_servers
+        return (
+            MCPServerConfig(
+                name="default",
+                target=self.mcp_server_url,
+                domains=(
+                    "talent",
+                    "achievement",
+                    "enterprise",
+                    "industry",
+                    "graph",
+                    "verification",
+                    "web",
+                ),
+            ),
+        )
 
     def model_config(self, agent_name: str | None = None) -> AgentModelConfig:
         """解析每 Agent 模型配置；未配置的字段回退到全局 MODEL_*。
@@ -214,6 +252,10 @@ class Settings:
                    mcp_server_host=os.getenv("MCP_SERVER_HOST", "127.0.0.1"),
                    mcp_server_port=int(os.getenv("MCP_SERVER_PORT", "8100")),
                    mcp_server_path=os.getenv("MCP_SERVER_PATH", "/mcp"),
+                   mcp_servers=parse_mcp_servers(os.getenv("MCP_SERVERS_JSON")),
+                   tool_transport_overrides=parse_transport_overrides(
+                       os.getenv("TOOL_TRANSPORT_OVERRIDES_JSON")
+                   ),
                    web_search_provider=os.getenv("WEB_SEARCH_PROVIDER", "disabled").lower(),
                    web_search_api_key=os.getenv("WEB_SEARCH_API_KEY"),
                    web_search_endpoint=os.getenv("WEB_SEARCH_ENDPOINT"),

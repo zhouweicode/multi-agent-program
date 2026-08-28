@@ -1,9 +1,13 @@
 from langgraph.types import Command
 
+from agents.web_research_agent import build_web_research_agent
 from formatters.web_formatter import format_web
 from graph.builder import build_graph
+from mcp_runtime.client import build_langchain_mcp_tools
+from mcp_runtime.server import mcp
 from nodes.validator_node import validator_node
 from services.evidence_normalizer import normalize_tool_output
+from tools.registry import tool_registry
 
 
 class FakeWebSearchService:
@@ -48,6 +52,30 @@ def test_simple_web_query_routes_to_web_research_agent(monkeypatch):
     assert len(final["final_answer"]) < 900
     assert "前 3 条见下方来源卡片" in final["final_answer"]
     assert "未自动写入知识图谱" in final["final_answer"]
+
+
+
+def test_web_research_agent_uses_prefixed_external_mcp_but_returns_canonical_fact(
+    monkeypatch,
+):
+    monkeypatch.setenv("MODEL_PROVIDER", "mock")
+    remote = build_langchain_mcp_tools(
+        mcp,
+        ["search_web"],
+        use_discovery_cache=False,
+        registry=tool_registry,
+        server_name="public_web",
+        name_prefix="external",
+    )
+    monkeypatch.setattr("agents.web_research_agent.get_tools", lambda _group: remote)
+
+    result = build_web_research_agent().run("联网查证 GraphRAG", {})
+
+    assert result["tool_calls"][0]["name"] == "search_web"
+    assert result["facts"][0]["tool"] == "search_web"
+    assert result["tool_receipts"][0]["visible_tool"] == "external__search_web"
+    assert result["tool_receipts"][0]["source"] == "mcp:public_web"
+
 
 
 def test_complex_query_fans_out_to_graph_and_web_agents(monkeypatch):

@@ -59,7 +59,7 @@ from services.telemetry import (
 from services.telemetry import (
     repository as observability_repository,
 )
-from skills.registry import skill_registry
+from skills.registry import SkillGateError, skill_registry
 
 
 @asynccontextmanager
@@ -145,6 +145,10 @@ class ResumeRequest(BaseModel):
 class LoginRequest(BaseModel):
     user_id: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+
+
+class SkillToggleRequest(BaseModel):
+    enabled: bool
 
 
 MemoryCategory = Literal[
@@ -258,19 +262,59 @@ def _public_run(run_id: str) -> dict:
 def health() -> dict:
     settings = Settings.from_env()
     _, active_release = active_release_settings(settings)
-    return {"status": "ok", "stage": 9, "model_provider": settings.model_provider,
-            "model_name": settings.model_name, "entity_backend": settings.entity_backend,
-            "achievement_backend": settings.achievement_backend, "graph_backend": settings.graph_backend,
-            "enterprise_backend": settings.enterprise_backend, "industry_backend": settings.industry_backend,
-            "embedding_provider": settings.embedding_provider, "tool_transport": settings.tool_transport,
-            "memory_backend": settings.memory_backend,
-            "memory_extraction_enabled": settings.memory_extraction_enabled,
-            "memory_retrieval_backend": settings.memory_retrieval_backend,
-            "memory_milvus_collection": settings.memory_milvus_collection,
-            "mcp_server_url": settings.mcp_server_url if settings.tool_transport == "mcp" else None,
-            "checkpointer": "sqlite", "execution": "background+sse",
-            "active_kg_release": active_release.get("release_id") if active_release else None,
-            "active_milvus_collection": active_release.get("milvus_collection") if active_release else settings.milvus_collection}
+    domains = (
+        "talent",
+        "achievement",
+        "enterprise",
+        "industry",
+        "graph",
+        "verification",
+        "web",
+    )
+    transports = {domain: settings.tool_transport_for(domain) for domain in domains}
+    active_mcp_domains = {
+        domain for domain, transport in transports.items() if transport == "mcp"
+    }
+    servers = [
+        {
+            "name": server.name,
+            "enabled": server.enabled,
+            "domains": list(server.domains),
+            "tool_prefix": server.tool_prefix,
+            "allowed_tool_count": len(server.allowed_tools),
+        }
+        for server in settings.resolved_mcp_servers()
+        if server.enabled
+        and active_mcp_domains
+        and (not server.domains or active_mcp_domains.intersection(server.domains))
+    ]
+    return {
+        "status": "ok",
+        "stage": 9,
+        "model_provider": settings.model_provider,
+        "model_name": settings.model_name,
+        "entity_backend": settings.entity_backend,
+        "achievement_backend": settings.achievement_backend,
+        "graph_backend": settings.graph_backend,
+        "enterprise_backend": settings.enterprise_backend,
+        "industry_backend": settings.industry_backend,
+        "embedding_provider": settings.embedding_provider,
+        "tool_transport": settings.tool_transport,
+        "tool_transports": transports,
+        "memory_backend": settings.memory_backend,
+        "memory_extraction_enabled": settings.memory_extraction_enabled,
+        "memory_retrieval_backend": settings.memory_retrieval_backend,
+        "memory_milvus_collection": settings.memory_milvus_collection,
+        "mcp_servers": servers,
+        "checkpointer": "sqlite",
+        "execution": "background+sse",
+        "active_kg_release": active_release.get("release_id")
+        if active_release
+        else None,
+        "active_milvus_collection": active_release.get("milvus_collection")
+        if active_release
+        else settings.milvus_collection,
+    }
 
 
 @app.get("/health/dependencies")
@@ -284,21 +328,63 @@ def dependency_health() -> JSONResponse:
             "update_jobs": manager.update_job_stats(),
         }
     except Exception as exc:  # noqa: BLE001 - 健康探针隔离外部数据库异常
-        checks["memory"] = {"ready": False, "error_type": type(exc).__name__,
-                            "message": str(exc)}
-    factories = (("entity", get_entity_service),) if settings.tool_transport == "mcp" else (
-        ("entity", get_entity_service), ("achievement", get_achievement_service),
-        ("enterprise", get_enterprise_service), ("industry", get_industry_service), ("graph", get_graph_service))
+        checks["memory"] = {
+            "ready": False,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+    factories = [("entity", get_entity_service)]
+    domain_factories = (
+        ("achievement", get_achievement_service),
+        ("enterprise", get_enterprise_service),
+        ("industry", get_industry_service),
+        ("graph", get_graph_service),
+    )
+    factories.extend(
+        (domain, factory)
+        for domain, factory in domain_factories
+        if settings.tool_transport_for(domain) == "local"
+    )
     for name, factory in factories:
         try:
             checks[name] = factory().health()
         except Exception as exc:  # noqa: BLE001 - 健康探针必须隔离任意第三方客户端异常
-            checks[name] = {"ready": False, "error_type": type(exc).__name__, "message": str(exc)}
-    if settings.tool_transport == "mcp":
-        checks["mcp"] = mcp_server_health(settings.mcp_server_url, settings.mcp_request_timeout)
+            checks[name] = {
+                "ready": False,
+                "error_type": type(exc).__name__,
+                "message": str(exc),
+            }
+    mcp_domains = {
+        domain
+        for domain in (
+            "talent",
+            "achievement",
+            "enterprise",
+            "industry",
+            "graph",
+            "verification",
+            "web",
+        )
+        if settings.tool_transport_for(domain) == "mcp"
+    }
+    for server in settings.resolved_mcp_servers():
+        if not server.enabled:
+            continue
+        if mcp_domains and (
+            not server.domains or mcp_domains.intersection(server.domains)
+        ):
+            checks[f"mcp:{server.name}"] = mcp_server_health(
+                server.target, settings.mcp_request_timeout
+            )
     ready = all(item.get("ready", False) for item in checks.values())
-    return JSONResponse(status_code=200 if ready else 503,
-                        content={"status": "ok" if ready else "degraded", "stage": 9, "dependencies": checks})
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ok" if ready else "degraded",
+            "stage": 9,
+            "dependencies": checks,
+        },
+    )
 
 
 @app.get("/metrics")
@@ -311,6 +397,28 @@ def metrics() -> dict:
 def list_runtime_skills() -> dict:
     """公开可调用的运行时 Skill 元数据，不暴露 Agent/Tool 权限。"""
     return {"skills": skill_registry.list()}
+
+
+@app.patch("/skills/{skill_id}")
+def toggle_runtime_skill(
+    skill_id: str, payload: SkillToggleRequest, request: Request
+) -> dict:
+    """第一版仅允许内置管理员启停仓库内可信 Skill。"""
+    user = _authenticated_user(request)
+    if user.get("username") != "admin":
+        raise HTTPException(status_code=403, detail="只有系统管理员可以启停 Skill")
+    try:
+        spec = skill_registry.set_enabled(skill_id, payload.enabled)
+    except SkillGateError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "skill_id": spec.skill_id,
+        "enabled": spec.enabled,
+        "version": spec.version,
+        "content_hash": spec.content_hash,
+    }
 
 
 @app.get("/", include_in_schema=False)

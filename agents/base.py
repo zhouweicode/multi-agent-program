@@ -105,6 +105,11 @@ class ToolCallingDomainAgent(AgentHarness):
             facts=facts,
             evidence=evidence,
             tool_calls=run.tool_calls,
+            tool_receipts=[
+                item["receipt"]
+                for item in run.observations
+                if item.get("receipt") is not None
+            ],
             errors=errors,
             metrics=run.metrics,
             stop_reason=run.stop_reason,

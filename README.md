@@ -213,6 +213,8 @@ export MCP_SERVER_URL=http://127.0.0.1:8100/mcp
 
 可通过`.venv/bin/python -m scripts.smoke_mcp_tools`列出远端工具。完整边界、白名单、联网搜索配置与故障行为见
 [`docs/08_mcp_tool_transport.md`](docs/08_mcp_tool_transport.md)。
+Tool契约、可信Skill Loader、评测门禁和多MCP控制面的整体设计见
+[`docs/12_tool_skill_mcp_governance.md`](docs/12_tool_skill_mcp_governance.md)。
 
 启动后访问 [http://127.0.0.1:8000](http://127.0.0.1:8000) 打开 GraphRAG Studio 前端。页面支持：
 
@@ -326,6 +328,8 @@ uvicorn app.main:app --reload
 | `GET` | `/queries/{run_id}/events` | 兼容性增量事件接口 |
 | `GET` | `/health` | 查看阶段、模型后端和 Checkpointer |
 | `GET` | `/health/dependencies` | 主动探测当前启用的 MySQL、Milvus、Neo4j 或 Mock 后端 |
+| `GET` | `/skills` | 查看可信仓库Skill的版本、内容哈希、Schema和启停状态 |
+| `PATCH` | `/skills/{skill_id}` | 管理员启停Skill；启用前执行离线评测门禁 |
 | `GET` | `/metrics` | 查看无敏感数据的运行状态与耗时摘要 |
 
 默认检查点文件是 `.runtime/checkpoints.sqlite`，用户和登录会话文件是 `.runtime/users.sqlite`，都已被 `.gitignore` 排除。

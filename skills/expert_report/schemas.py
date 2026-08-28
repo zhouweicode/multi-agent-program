@@ -1,7 +1,17 @@
 """专家报告的稳定输出协议。"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class ExpertReportInput(BaseModel):
+    report_type: Literal["brief", "comprehensive"] = "comprehensive"
+    audience: str = "internal"
+    include_enterprise: bool = True
+    include_cooperation_network: bool = True
+    include_web: bool = False
+    top_n: int = Field(default=10, ge=1, le=50)
 
 
 class ReportClaim(BaseModel):

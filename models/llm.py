@@ -69,6 +69,12 @@ class MockToolCallingModel:
 
     def bind_tools(self, tools: list[Any]) -> "MockToolCallingModel":
         self.allowed_tools = {t.name for t in tools}
+        self.visible_tool_names = {
+            (getattr(tool, "metadata", None) or {}).get(
+                "canonical_tool_name", tool.name
+            ): tool.name
+            for tool in tools
+        }
         return self
 
     def invoke(self, messages: list[Any]) -> AIMessage:
@@ -125,7 +131,11 @@ class MockToolCallingModel:
             "web": [("search_web", {"query": goal, "max_results": 5})],
         }
         completed = len([msg for msg in messages if isinstance(msg, ToolMessage)])
-        specs = [(name, args) for name, args in call_specs[self.domain] if name in self.allowed_tools]
+        specs = [
+            (self.visible_tool_names[name], args)
+            for name, args in call_specs[self.domain]
+            if name in self.visible_tool_names
+        ]
         if completed < len(specs):
             name, args = specs[completed]
             return AIMessage(content=f"执行领域任务步骤 {completed + 1}", tool_calls=[
@@ -139,6 +149,12 @@ class MockVerificationModel:
     """按 Observation 逐步决策的离线验证模型，使用标准 Messages/Tool Call 协议。"""
     def bind_tools(self, tools: list[Any]) -> "MockVerificationModel":
         self.allowed_tools = {tool.name for tool in tools}
+        self.visible_tool_names = {
+            (getattr(tool, "metadata", None) or {}).get(
+                "canonical_tool_name", tool.name
+            ): tool.name
+            for tool in tools
+        }
         return self
 
     def invoke(self, messages: list[Any]) -> AIMessage:
@@ -154,9 +170,10 @@ class MockVerificationModel:
         ]
         if len(observations) < len(sequence):
             name, args = sequence[len(observations)]
-            if name in self.allowed_tools:
+            visible_name = self.visible_tool_names.get(name)
+            if visible_name:
                 return AIMessage(content=f"验证步骤 {len(observations) + 1}", tool_calls=[
-                    {"name": name, "args": args, "id": str(uuid.uuid4()), "type": "tool_call"}
+                    {"name": visible_name, "args": args, "id": str(uuid.uuid4()), "type": "tool_call"}
                 ])
         evidence_ok = bool(observations) and observations[0].get("valid", False)
         sources_ok = len(observations) > 1 and observations[1].get("trusted", False)
@@ -245,7 +262,6 @@ class OpenAIStructuredModel:
 只涉及一个领域时 complexity=simple；需要多个领域协作时 complexity=complex。""",
             {"question": question},
         )
-
     def invoke_supervisor(self, question: str, resolved_entities: dict[str, str], validation_result: dict | None = None,
                           verification_result: dict | None = None, task_history: list[dict] | None = None,
                           memory_context: str | None = None) -> SupervisorPlan:

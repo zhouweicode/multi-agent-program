@@ -46,6 +46,7 @@ class DomainResult(BaseModel):
     facts: list[dict[str, Any]] = Field(default_factory=list)
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     tool_calls: list[ToolCallSpec] = Field(default_factory=list)
+    tool_receipts: list[dict[str, Any]] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
     stop_reason: str = "completed"

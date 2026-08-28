@@ -1,3 +1,34 @@
+---
+id: industry_landscape
+version: 1.1.0
+name: 产业全景报告
+description: 基于产业链结构、关联企业、重点事件和可选公开来源生成可追溯产业全景报告。
+enabled: true
+trigger_phrases:
+  - 产业全景报告
+  - 产业链全景报告
+  - 行业全景报告
+  - 产业研究报告
+required_capabilities:
+  - industry_landscape_core
+optional_capabilities:
+  - external_industry_evidence
+input_schema: skills.industry_landscape.schemas:IndustryLandscapeInput
+output_schema: skills.industry_landscape.schemas:IndustryLandscapeReport
+default_input:
+  report_type: comprehensive
+  audience: internal
+  industry_query: ""
+  include_web: false
+  top_n_companies: 10
+  top_n_events: 10
+evaluation:
+  dataset: evals/industry_landscape_cases.json
+  baseline: evals/baselines/industry_landscape_v1.json
+  runner: evaluation.industry_landscape_runner:evaluate_industry_landscape_dataset
+  gate: evaluation.industry_landscape_runner:evaluate_industry_landscape_gate
+---
+
 # 产业全景报告 Skill
 
 ## 目标

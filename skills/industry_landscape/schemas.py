@@ -1,7 +1,17 @@
 """产业全景报告输出协议。"""
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+class IndustryLandscapeInput(BaseModel):
+    report_type: Literal["brief", "comprehensive"] = "comprehensive"
+    audience: str = "internal"
+    industry_query: str = ""
+    include_web: bool = False
+    top_n_companies: int = Field(default=10, ge=1, le=50)
+    top_n_events: int = Field(default=10, ge=1, le=50)
 
 
 class IndustryClaim(BaseModel):

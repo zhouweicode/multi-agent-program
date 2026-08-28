@@ -1,4 +1,5 @@
 """全图共享状态。Node 只读写自己需要的字段。"""
+
 import operator
 from typing import Annotated, Any, TypedDict
 
@@ -36,6 +37,7 @@ class GraphRAGState(TypedDict, total=False):
     web_search_enabled: bool
     requested_skill: str
     skill_version: str
+    skill_content_hash: str
     skill_input: dict[str, Any]
     skill_capabilities: list[str]
     skill_required_domains: list[str]

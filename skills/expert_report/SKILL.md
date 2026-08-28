@@ -1,3 +1,37 @@
+---
+id: expert_report
+version: 1.1.0
+name: 专家报告
+description: 基于已解析专家实体和可追溯领域证据，生成可降级、可审计的结构化专家报告。
+enabled: true
+trigger_phrases:
+  - 专家报告
+  - 专家评估报告
+  - 人才评估报告
+  - 专家调研报告
+required_capabilities:
+  - expert_profile_history
+  - research_achievements
+optional_capabilities:
+  - enterprise_relations
+  - cooperation_network
+  - external_public_evidence
+input_schema: skills.expert_report.schemas:ExpertReportInput
+output_schema: skills.expert_report.schemas:ExpertReport
+default_input:
+  report_type: comprehensive
+  audience: internal
+  include_enterprise: true
+  include_cooperation_network: true
+  include_web: false
+  top_n: 10
+evaluation:
+  dataset: evals/expert_report_cases.json
+  baseline: evals/baselines/expert_report_v1.json
+  runner: evaluation.expert_report_runner:evaluate_expert_report_dataset
+  gate: evaluation.expert_report_runner:evaluate_expert_report_gate
+---
+
 # 专家报告 Skill
 
 ## 目标

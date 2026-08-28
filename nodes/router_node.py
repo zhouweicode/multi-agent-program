@@ -111,9 +111,10 @@ def router_node(state: GraphRAGState) -> dict:
                        if skill.skill_id == "industry_landscape" else
                        normalize_expert_report_input(state["question"], state.get("skill_input")))
         skill_update = {"requested_skill": skill.skill_id, "skill_version": skill.version,
-                        "skill_input": skill_input}
+                        "skill_content_hash": skill.content_hash, "skill_input": skill_input}
         emit_event("SKILL_SELECTED", thread_id=state.get("thread_id"), skill_id=skill.skill_id,
-                   skill_version=skill.version, report_type=skill_input["report_type"],
+                   skill_version=skill.version, skill_content_hash=skill.content_hash,
+                   report_type=skill_input["report_type"],
                    subject=skill_input.get("industry_query"))
     # 权威库用于纠正机构误判，但不能静默删掉问题中尚未入库的人名。
     try:

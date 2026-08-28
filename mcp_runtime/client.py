@@ -1,4 +1,5 @@
 """把远端 MCP Tool 动态适配成 LangChain StructuredTool。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,6 +11,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 from mcp import Client
+
 from services.telemetry import trace_carrier, traced_span
 
 
@@ -19,7 +21,9 @@ def _run_sync(factory: Callable[[], Awaitable[Any]]) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(factory())
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-sync-bridge") as executor:
+    with ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="mcp-sync-bridge"
+    ) as executor:
         return executor.submit(lambda: asyncio.run(factory())).result()
 
 
@@ -29,7 +33,9 @@ class MCPGateway:
         self.timeout_seconds = timeout_seconds
 
     async def list_tool_specs_async(self) -> list[dict]:
-        async with Client(self.target, read_timeout_seconds=self.timeout_seconds) as client:
+        async with Client(
+            self.target, read_timeout_seconds=self.timeout_seconds
+        ) as client:
             result = await client.list_tools()
             return [item.model_dump() for item in result.tools]
 
@@ -37,20 +43,36 @@ class MCPGateway:
         return _run_sync(self.list_tool_specs_async)
 
     async def call_tool_async(self, name: str, arguments: dict[str, Any]) -> Any:
-        with traced_span(f"mcp.client.{name}", "mcp_client", {
-            "mcp.tool.name": name,
-            "mcp.server": str(self.target),
-        }):
+        with traced_span(
+            f"mcp.client.{name}",
+            "mcp_client",
+            {
+                "mcp.tool.name": name,
+                "mcp.server": str(self.target),
+            },
+        ):
             carrier = trace_carrier()
             meta = {"graphrag_trace": carrier} if carrier else None
-            async with Client(self.target, read_timeout_seconds=self.timeout_seconds) as client:
-                result = await client.call_tool(name, arguments, read_timeout_seconds=self.timeout_seconds,
-                                                meta=meta)
+            async with Client(
+                self.target, read_timeout_seconds=self.timeout_seconds
+            ) as client:
+                result = await client.call_tool(
+                    name,
+                    arguments,
+                    read_timeout_seconds=self.timeout_seconds,
+                    meta=meta,
+                )
         if result.is_error:
-            raise RuntimeError(f"MCP工具执行失败 {name}: {self._content_text(result.content)}")
+            raise RuntimeError(
+                f"MCP工具执行失败 {name}: {self._content_text(result.content)}"
+            )
         if result.structured_content is not None:
             payload = result.structured_content
-            return payload.get("result") if isinstance(payload, dict) and set(payload) == {"result"} else payload
+            return (
+                payload.get("result")
+                if isinstance(payload, dict) and set(payload) == {"result"}
+                else payload
+            )
         text = self._content_text(result.content).strip()
         if not text:
             return None
@@ -64,7 +86,11 @@ class MCPGateway:
 
     @staticmethod
     def _content_text(content: list[Any]) -> str:
-        return "\n".join(str(getattr(item, "text", "")) for item in content if getattr(item, "text", None))
+        return "\n".join(
+            str(getattr(item, "text", ""))
+            for item in content
+            if getattr(item, "text", None)
+        )
 
 
 @lru_cache(maxsize=8)
@@ -73,8 +99,15 @@ def discover_http_tools(url: str, timeout_seconds: float) -> tuple[dict, ...]:
     return tuple(MCPGateway(url, timeout_seconds).list_tool_specs())
 
 
-def build_langchain_mcp_tools(target: Any, allowed_names: list[str], timeout_seconds: float = 30,
-                              use_discovery_cache: bool = True) -> list[StructuredTool]:
+def build_langchain_mcp_tools(
+    target: Any,
+    allowed_names: list[str],
+    timeout_seconds: float = 30,
+    use_discovery_cache: bool = True,
+    registry: Any | None = None,
+    server_name: str = "default",
+    name_prefix: str = "",
+) -> list[StructuredTool]:
     gateway = MCPGateway(target, timeout_seconds)
     try:
         if isinstance(target, str) and use_discovery_cache:
@@ -83,7 +116,9 @@ def build_langchain_mcp_tools(target: Any, allowed_names: list[str], timeout_sec
             specs = gateway.list_tool_specs()
     except Exception as exc:
         error_type, message = _exception_details(exc)
-        raise RuntimeError(f"无法连接MCP Server {target}: {error_type}: {message}") from exc
+        raise RuntimeError(
+            f"无法连接MCP Server {target}: {error_type}: {message}"
+        ) from exc
     by_name = {item["name"]: item for item in specs}
     missing = [name for name in allowed_names if name not in by_name]
     if missing:
@@ -92,6 +127,7 @@ def build_langchain_mcp_tools(target: Any, allowed_names: list[str], timeout_sec
     result = []
     for tool_name in allowed_names:
         spec = by_name[tool_name]
+        visible_name = f"{name_prefix}__{tool_name}" if name_prefix else tool_name
 
         def sync_call(_name=tool_name, **arguments):
             return gateway.call_tool(_name, arguments)
@@ -99,25 +135,49 @@ def build_langchain_mcp_tools(target: Any, allowed_names: list[str], timeout_sec
         async def async_call(_name=tool_name, **arguments):
             return await gateway.call_tool_async(_name, arguments)
 
-        result.append(StructuredTool(
-            name=tool_name,
-            description=spec.get("description") or tool_name,
-            args_schema=spec["input_schema"],
-            func=sync_call,
-            coroutine=async_call,
-            metadata={"tool_transport": "mcp", "mcp_server": str(target)},
-        ))
+        metadata = {
+            "tool_transport": "mcp",
+            "mcp_server": str(target),
+            "mcp_server_name": server_name,
+            "canonical_tool_name": tool_name,
+            "visible_tool_name": visible_name,
+        }
+        if registry is not None:
+            metadata.update(registry.metadata(tool_name, transport="mcp"))
+        metadata["tool_source"] = f"mcp:{server_name}"
+        result.append(
+            StructuredTool(
+                name=visible_name,
+                description=spec.get("description") or tool_name,
+                args_schema=spec["input_schema"],
+                func=sync_call,
+                coroutine=async_call,
+                metadata=metadata,
+            )
+        )
     return result
 
 
-def mcp_server_health(url: str, timeout_seconds: float = 30) -> dict:
+def mcp_server_health(url: Any, timeout_seconds: float = 30) -> dict:
     try:
         specs = MCPGateway(url, timeout_seconds).list_tool_specs()
-        domains = sorted({(item.get("meta") or {}).get("domain", "unknown") for item in specs})
-        return {"ready": True, "url": url, "tool_count": len(specs), "domains": domains}
+        domains = sorted(
+            {(item.get("meta") or {}).get("domain", "unknown") for item in specs}
+        )
+        return {
+            "ready": True,
+            "target": str(url),
+            "tool_count": len(specs),
+            "domains": domains,
+        }
     except Exception as exc:  # noqa: BLE001 - 健康探针将协议/网络异常转换为degraded状态
         error_type, message = _exception_details(exc)
-        return {"ready": False, "url": url, "error_type": error_type, "message": message}
+        return {
+            "ready": False,
+            "target": str(url),
+            "error_type": error_type,
+            "message": message,
+        }
 
 
 def _exception_details(exc: BaseException) -> tuple[str, str]:
