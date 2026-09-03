@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from agents.runtime_resources import close_shared_runtime_resources
 from graph.builder import build_graph
 from mcp_runtime.client import mcp_server_health
 from models.settings import Settings
@@ -70,6 +71,7 @@ async def lifespan(_app: FastAPI):
     stop_memory_update_worker()
     close_memory_manager()
     close_auth_services()
+    close_shared_runtime_resources()
     close_resources()
     close_sqlite_checkpointer()
 

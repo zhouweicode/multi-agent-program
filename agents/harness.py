@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
-import queue
 import random
-import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, ClassVar
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
+from agents.runtime_resources import (
+    AsyncLoopRunner,
+    BoundedExecutor,
+    CircuitOpenError,
+    RuntimeCapacityError,
+    ToolHealthRegistry,
+    shared_async_runner,
+    shared_invocation_executor,
+    shared_orchestration_executor,
+    shared_tool_health_registry,
+)
 from models.schemas import ToolCallSpec
 from models.settings import Settings
 from services.observability import emit_event
@@ -47,6 +57,8 @@ class HarnessConfig:
     retry_jitter_seconds: float = 0.05
     circuit_breaker_threshold: int = 5
     circuit_breaker_reset_seconds: float = 30.0
+    provider_max_concurrency: int = 8
+    capacity_acquire_timeout_seconds: float = 0.1
     parallel_tool_calls: bool = True
     max_parallel_tools: int = 4
     observation_max_chars: int = 8_000
@@ -98,6 +110,14 @@ class HarnessConfig:
             ),
             circuit_breaker_reset_seconds=value(
                 "CIRCUIT_BREAKER_RESET_SECONDS", base.circuit_breaker_reset_seconds, float
+            ),
+            provider_max_concurrency=value(
+                "PROVIDER_MAX_CONCURRENCY", base.provider_max_concurrency, int
+            ),
+            capacity_acquire_timeout_seconds=value(
+                "CAPACITY_ACQUIRE_TIMEOUT_SECONDS",
+                base.capacity_acquire_timeout_seconds,
+                float,
             ),
             parallel_tool_calls=value(
                 "PARALLEL_TOOL_CALLS", base.parallel_tool_calls,
@@ -389,6 +409,7 @@ class ToolErrorCategory(str, Enum):
     PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
     TOOL_ERROR = "TOOL_ERROR"
     CIRCUIT_OPEN = "CIRCUIT_OPEN"
+    PROVIDER_BUSY = "PROVIDER_BUSY"
 
 
 @dataclass
@@ -401,10 +422,19 @@ class ToolExecutionResult:
     message: str | None = None
 
 
+@dataclass(frozen=True)
+class PreparedToolCall:
+    call: dict[str, Any]
+    tool: Any | None
+    canonical_name: str
+
+
 def classify_tool_error(exc: Exception) -> ToolErrorCategory:
     message = str(exc).lower()
     status = getattr(exc, "status_code", None)
     name = type(exc).__name__.lower()
+    if isinstance(exc, RuntimeCapacityError):
+        return ToolErrorCategory.PROVIDER_BUSY
     if (
         isinstance(exc, TimeoutError)
         or "timeout" in name
@@ -428,34 +458,48 @@ def classify_model_error(exc: Exception) -> str:
         ToolErrorCategory.RATE_LIMIT: "MODEL_RATE_LIMIT",
         ToolErrorCategory.PROVIDER_UNAVAILABLE: "MODEL_PROVIDER_UNAVAILABLE",
         ToolErrorCategory.INVALID_ARGUMENT: "MODEL_INVALID_REQUEST",
+        ToolErrorCategory.PROVIDER_BUSY: "MODEL_BUSY",
     }.get(category, "MODEL_ERROR")
 
 
-def _invoke_model_with_timeout(model: Any, messages: list[Any], timeout: float) -> Any:
-    if timeout <= 0:
-        return model.invoke(messages)
-    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
-
-    def target() -> None:
-        try:
-            result_queue.put((True, model.invoke(messages)))
-        except Exception as exc:  # noqa: BLE001 - normalize provider failures.
-            result_queue.put((False, exc))
-
-    threading.Thread(target=target, name="agent-model", daemon=True).start()
+def _invoke_model_with_timeout(
+    model: Any,
+    messages: list[Any],
+    timeout: float,
+    executor: BoundedExecutor,
+    async_runner: AsyncLoopRunner,
+    acquire_timeout: float,
+) -> Any:
+    async_invoke = getattr(model, "ainvoke", None)
+    if callable(async_invoke) and inspect.iscoroutinefunction(async_invoke):
+        return async_runner.invoke(
+            lambda: async_invoke(messages),
+            timeout=timeout,
+            acquire_timeout=acquire_timeout,
+        )
     try:
-        success, value = result_queue.get(timeout=timeout)
-    except queue.Empty as exc:
+        return executor.invoke(
+            model.invoke,
+            messages,
+            timeout=timeout,
+            acquire_timeout=acquire_timeout,
+        )
+    except TimeoutError as exc:
         raise TimeoutError(f"模型调用超过 {timeout:g}s") from exc
-    if success:
-        return value
-    raise value
 
 
 class ModelExecutor:
     RETRYABLE: ClassVar[set[str]] = {
         "MODEL_TIMEOUT", "MODEL_RATE_LIMIT", "MODEL_PROVIDER_UNAVAILABLE"
     }
+
+    def __init__(
+        self,
+        invocation_executor: BoundedExecutor | None = None,
+        async_runner: AsyncLoopRunner | None = None,
+    ):
+        self.invocation_executor = invocation_executor or shared_invocation_executor()
+        self.async_runner = async_runner or shared_async_runner()
 
     def invoke(
         self, model: Any, messages: list[Any], config: HarnessConfig,
@@ -469,7 +513,12 @@ class ModelExecutor:
                 if cancel_check:
                     cancel_check()
                 return _invoke_model_with_timeout(
-                    model, messages, config.model_timeout_seconds
+                    model,
+                    messages,
+                    config.model_timeout_seconds,
+                    self.invocation_executor,
+                    self.async_runner,
+                    config.capacity_acquire_timeout_seconds,
                 )
             except Exception as exc:
                 if isinstance(exc, RunCancelledError):
@@ -492,32 +541,29 @@ class ModelExecutor:
         raise ModelExecutionError(last_category, str(last_error))
 
 
-def _invoke_with_timeout(tool: Any, arguments: dict[str, Any], timeout: float) -> Any:
+def _invoke_with_timeout(
+    tool: Any,
+    arguments: dict[str, Any],
+    timeout: float,
+    executor: BoundedExecutor,
+    async_runner: AsyncLoopRunner,
+    acquire_timeout: float,
+) -> Any:
     if getattr(tool, "coroutine", None) is not None:
-        async def invoke_async() -> Any:
-            operation = tool.ainvoke(arguments)
-            return await asyncio.wait_for(operation, timeout) if timeout > 0 else await operation
-        return asyncio.run(invoke_async())
-    if timeout <= 0:
-        return tool.invoke(arguments)
-    result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
-
-    def target() -> None:
-        try:
-            result_queue.put((True, tool.invoke(arguments)))
-        except Exception as exc:  # noqa: BLE001 - 在线程边界传回工具错误，由主线程统一分类。
-            result_queue.put((False, exc))
-
-    threading.Thread(
-        target=target, name=f"tool-{getattr(tool, 'name', 'unknown')}", daemon=True
-    ).start()
+        return async_runner.invoke(
+            lambda: tool.ainvoke(arguments),
+            timeout=timeout,
+            acquire_timeout=acquire_timeout,
+        )
     try:
-        success, value = result_queue.get(timeout=timeout)
-    except queue.Empty as exc:
+        return executor.invoke(
+            tool.invoke,
+            arguments,
+            timeout=timeout,
+            acquire_timeout=acquire_timeout,
+        )
+    except TimeoutError as exc:
         raise TimeoutError(f"工具执行超过 {timeout:g}s") from exc
-    if success:
-        return value
-    raise value
 
 
 class ToolExecutor:
@@ -527,13 +573,30 @@ class ToolExecutor:
         ToolErrorCategory.PROVIDER_UNAVAILABLE,
     }
 
-    def __init__(self) -> None:
-        self._circuit_lock = threading.Lock()
-        self._circuit_state: dict[str, tuple[int, float]] = {}
+    def __init__(
+        self,
+        health_registry: ToolHealthRegistry | None = None,
+        invocation_executor: BoundedExecutor | None = None,
+        orchestration_executor: BoundedExecutor | None = None,
+        async_runner: AsyncLoopRunner | None = None,
+    ) -> None:
+        self.health_registry = health_registry or shared_tool_health_registry()
+        self.invocation_executor = invocation_executor or shared_invocation_executor()
+        self.orchestration_executor = (
+            orchestration_executor or shared_orchestration_executor()
+        )
+        self.async_runner = async_runner or shared_async_runner()
+
+    @staticmethod
+    def _provider_key(tool: Any) -> str:
+        metadata = getattr(tool, "metadata", None) or {}
+        source = str(metadata.get("tool_source") or "local")
+        domain = str(metadata.get("tool_domain") or "")
+        return f"{source}:{domain}" if source == "local:repository" and domain else source
 
     def _circuit_key(self, tool: Any) -> str:
         metadata = getattr(tool, "metadata", None) or {}
-        source = str(metadata.get("tool_source") or "local")
+        source = self._provider_key(tool)
         name = str(
             metadata.get("canonical_tool_name")
             or getattr(tool, "name", "unknown")
@@ -541,29 +604,19 @@ class ToolExecutor:
         return f"{source}:{name}"
 
     def _check_circuit(self, tool: Any, config: HarnessConfig) -> None:
-        key = self._circuit_key(tool)
-        with self._circuit_lock:
-            failures, opened_at = self._circuit_state.get(key, (0, 0.0))
-            if failures < max(1, config.circuit_breaker_threshold):
-                return
-            if time.monotonic() - opened_at >= config.circuit_breaker_reset_seconds:
-                self._circuit_state[key] = (0, 0.0)
-                return
-        raise RuntimeError(f"CIRCUIT_OPEN:{key}")
+        self.health_registry.enter_circuit(
+            self._circuit_key(tool),
+            threshold=config.circuit_breaker_threshold,
+            reset_seconds=config.circuit_breaker_reset_seconds,
+        )
 
     def _record_circuit(self, tool: Any, success: bool, category: ToolErrorCategory | None,
                         config: HarnessConfig) -> None:
-        key = self._circuit_key(tool)
-        with self._circuit_lock:
-            if success:
-                self._circuit_state[key] = (0, 0.0)
-            elif category in self.RETRYABLE:
-                failures, _ = self._circuit_state.get(key, (0, 0.0))
-                failures += 1
-                self._circuit_state[key] = (
-                    failures,
-                    time.monotonic() if failures >= max(1, config.circuit_breaker_threshold) else 0.0,
-                )
+        self.health_registry.record_outcome(
+            self._circuit_key(tool),
+            success=success,
+            transient_failure=category in self.RETRYABLE,
+        )
 
     def execute(
         self,
@@ -579,9 +632,11 @@ class ToolExecutor:
         last_category: ToolErrorCategory | None = None
         metadata = getattr(tool, "metadata", None) or {}
         retry_limit = max(0, config.tool_max_retries) if metadata.get("idempotent", True) else 0
+        circuit_key = self._circuit_key(tool)
+        provider_key = self._provider_key(tool)
         try:
             self._check_circuit(tool, config)
-        except RuntimeError as exc:
+        except CircuitOpenError as exc:
             return ToolExecutionResult(
                 False, {"error": ToolErrorCategory.CIRCUIT_OPEN.value, "message": str(exc)},
                 0, 0.0, ToolErrorCategory.CIRCUIT_OPEN, str(exc),
@@ -590,18 +645,32 @@ class ToolExecutor:
             try:
                 if cancel_check:
                     cancel_check()
-                output = _invoke_with_timeout(
-                    tool, arguments, config.tool_timeout_seconds
-                )
+                with self.health_registry.provider_slot(
+                    provider_key,
+                    limit=config.provider_max_concurrency,
+                    acquire_timeout=config.capacity_acquire_timeout_seconds,
+                ):
+                    output = _invoke_with_timeout(
+                        tool,
+                        arguments,
+                        config.tool_timeout_seconds,
+                        self.invocation_executor,
+                        self.async_runner,
+                        config.capacity_acquire_timeout_seconds,
+                    )
                 self._record_circuit(tool, True, None, config)
                 return ToolExecutionResult(
                     True, output, attempts, (time.perf_counter() - started) * 1000
                 )
             except Exception as exc:
                 if isinstance(exc, RunCancelledError):
+                    self.health_registry.abandon_probe(circuit_key)
                     raise
                 last_error = exc
                 last_category = classify_tool_error(exc)
+                if last_category == ToolErrorCategory.PROVIDER_BUSY:
+                    self.health_registry.abandon_probe(circuit_key)
+                    break
                 if (
                     last_category not in self.RETRYABLE
                     or attempts > retry_limit
@@ -618,7 +687,8 @@ class ToolExecutor:
                     if cancel_check:
                         cancel_check()
                     time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-        self._record_circuit(tool, False, last_category, config)
+        if last_category != ToolErrorCategory.PROVIDER_BUSY:
+            self._record_circuit(tool, False, last_category, config)
         return ToolExecutionResult(
             False,
             {
@@ -643,11 +713,13 @@ class ToolExecutor:
         """Execute independent tools concurrently while preserving input order."""
         if not requests:
             return []
-        workers = max(1, min(config.max_parallel_tools, len(requests)))
         results: list[ToolExecutionResult | None] = [None] * len(requests)
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="agent-tool") as pool:
+        workers = max(1, min(config.max_parallel_tools, len(requests)))
+        for offset in range(0, len(requests), workers):
             futures = {}
-            for index, (tool, arguments) in enumerate(requests):
+            wave = requests[offset:offset + workers]
+            for relative_index, (tool, arguments) in enumerate(wave):
+                index = offset + relative_index
                 tool_name = str(getattr(tool, "name", "unknown"))
 
                 def retry_callback(
@@ -657,17 +729,45 @@ class ToolExecutor:
                     if on_retry:
                         on_retry(current_tool_name, category, attempt, exc)
 
-                future = pool.submit(
-                    self.execute,
-                    tool,
-                    arguments,
-                    config,
-                    retry_callback if on_retry else None,
-                    cancel_check,
-                )
-                futures[future] = index
+                try:
+                    future = self.orchestration_executor.submit(
+                        self.execute,
+                        tool,
+                        arguments,
+                        config,
+                        retry_callback if on_retry else None,
+                        cancel_check,
+                        acquire_timeout=config.capacity_acquire_timeout_seconds,
+                    )
+                    futures[future] = index
+                except RuntimeCapacityError as exc:
+                    results[index] = ToolExecutionResult(
+                        False,
+                        {"error": ToolErrorCategory.PROVIDER_BUSY.value,
+                         "message": str(exc)},
+                        0,
+                        0.0,
+                        ToolErrorCategory.PROVIDER_BUSY,
+                        str(exc),
+                    )
             for future in as_completed(futures):
-                results[futures[future]] = future.result()
+                index = futures[future]
+                try:
+                    results[index] = future.result()
+                except RunCancelledError:
+                    for pending in futures:
+                        pending.cancel()
+                    raise
+                except Exception as exc:  # noqa: BLE001 - isolate one parallel Tool failure.
+                    category = classify_tool_error(exc)
+                    results[index] = ToolExecutionResult(
+                        False,
+                        {"error": category.value, "message": str(exc)},
+                        0,
+                        0.0,
+                        category,
+                        str(exc),
+                    )
         return [item for item in results if item is not None]
 
     async def aexecute(
@@ -799,6 +899,185 @@ class AgentHarness:
             **context.metrics.as_dict(),
         )
 
+    def _prepare_tool_call(
+        self,
+        call: dict[str, Any],
+        calls: list[ToolCallSpec],
+        context: HarnessContext,
+        step: int,
+        *,
+        parallel: bool,
+    ) -> PreparedToolCall:
+        tool = self.tools.get(call["name"])
+        metadata = dict(getattr(tool, "metadata", None) or {})
+        canonical_name = str(
+            metadata.get("canonical_tool_name") or call["name"]
+        )
+        calls.append(
+            ToolCallSpec(name=canonical_name, arguments=call.get("args", {}))
+        )
+        context.metrics.tool_calls = len(calls)
+        emit_event(
+            "AGENT_TOOL_CALLED",
+            thread_id=context.thread_id,
+            agent_name=self.name,
+            tool_name=call["name"],
+            step=step,
+            tool_input=call.get("args", {}),
+            parallel=parallel,
+        )
+        return PreparedToolCall(call, tool, canonical_name)
+
+    @staticmethod
+    def _unauthorized_execution(call: dict[str, Any]) -> ToolExecutionResult:
+        message = f"工具未授权: {call['name']}"
+        return ToolExecutionResult(
+            False,
+            {"error": ToolErrorCategory.UNAUTHORIZED.value, "message": message},
+            0,
+            0.0,
+            ToolErrorCategory.UNAUTHORIZED,
+            message,
+        )
+
+    def _execute_prepared_call(
+        self,
+        prepared: PreparedToolCall,
+        context: HarnessContext,
+        step: int,
+        *,
+        parallel: bool,
+    ) -> ToolExecutionResult:
+        call, tool = prepared.call, prepared.tool
+        if tool is None:
+            return self._unauthorized_execution(call)
+        metadata = getattr(tool, "metadata", None) or {}
+        with traced_span(
+            f"tool.{call['name']}",
+            "tool",
+            {
+                "agent.name": self.name,
+                "tool.name": call["name"],
+                "tool.transport": metadata.get("tool_transport", "local"),
+                "agent.step": step,
+                "tool.parallel": parallel,
+            },
+        ) as tool_span:
+            execution = self.tool_executor.execute(
+                tool,
+                call.get("args", {}),
+                self.config,
+                on_retry=lambda category, attempt, exc: emit_event(
+                    "AGENT_TOOL_RETRYING",
+                    thread_id=context.thread_id,
+                    agent_name=self.name,
+                    tool_name=call["name"],
+                    step=step,
+                    failed_attempt=attempt,
+                    error_category=category.value,
+                    error=str(exc),
+                    parallel=parallel,
+                ),
+                cancel_check=lambda: raise_if_stopped(context.thread_id),
+            )
+            tool_span.set_attribute("tool.attempts", execution.attempts)
+            tool_span.set_attribute(
+                "tool.result_count",
+                len(execution.output)
+                if isinstance(execution.output, list) else 1,
+            )
+            return execution
+
+    def _finalize_tool_call(
+        self,
+        prepared: PreparedToolCall,
+        execution: ToolExecutionResult,
+        context: HarnessContext,
+        observations: list[dict[str, Any]],
+        errors: list[str],
+        active_messages: list[Any],
+        step: int,
+        *,
+        parallel: bool,
+    ) -> None:
+        """Apply governance, observability, compression and ToolMessage uniformly."""
+        call = prepared.call
+        context.metrics.tool_attempts += execution.attempts
+        observation = {
+            "tool": call["name"],
+            "data": execution.output,
+            "success": execution.success,
+            "error_category": (
+                execution.category.value if execution.category else None
+            ),
+            "attempts": execution.attempts,
+            "duration_ms": round(execution.duration_ms, 2),
+        }
+        observations.append(observation)
+        if execution.success:
+            self.middleware.call("after_tool", context, call, observation)
+            event = "AGENT_TOOL_COMPLETED"
+            safe_message = None
+        else:
+            self.middleware.call("on_tool_error", context, call, observation)
+            category = execution.category or ToolErrorCategory.TOOL_ERROR
+            safe_data = observation.get("data")
+            safe_message = (
+                safe_data.get("message")
+                if isinstance(safe_data, dict) else str(safe_data)
+            ) or execution.message
+            errors.append(f"{call['name']}: [{category.value}] {safe_message}")
+            event = (
+                "AGENT_TOOL_TIMED_OUT"
+                if category == ToolErrorCategory.TIMEOUT else "AGENT_TOOL_FAILED"
+            )
+        emit_event(
+            event,
+            thread_id=context.thread_id,
+            agent_name=self.name,
+            tool_name=call["name"],
+            step=step,
+            attempts=execution.attempts,
+            duration_ms=round(execution.duration_ms, 2),
+            result_count=(
+                len(observation["data"])
+                if isinstance(observation["data"], list) else 1
+            ),
+            error_category=(
+                execution.category.value if execution.category else None
+            ),
+            error=safe_message,
+            canonical_tool_name=observation["tool"],
+            tool_source=observation["source_metadata"]["source"],
+            receipt_id=observation["receipt"]["receipt_id"],
+            tool_output=observation["data"],
+            parallel=parallel,
+        )
+        compressed, was_compressed, original_chars = compress_observation(
+            observation["data"],
+            self.config.observation_max_chars,
+            self.config.observation_max_items,
+        )
+        if was_compressed:
+            emit_event(
+                "AGENT_OBSERVATION_COMPRESSED",
+                thread_id=context.thread_id,
+                agent_name=self.name,
+                tool_name=call["name"],
+                original_chars=original_chars,
+                compressed_chars=len(
+                    json.dumps(compressed, ensure_ascii=False, default=str)
+                ),
+            )
+        active_messages.append(
+            ToolMessage(
+                content=json.dumps(compressed, ensure_ascii=False, default=str),
+                tool_call_id=call["id"],
+                name=call["name"],
+            )
+        )
+        self._budget_event(context)
+
     def _execute_parallel_batch(
         self,
         message: Any,
@@ -829,33 +1108,20 @@ class AgentHarness:
             )
             return True, exc.code
 
-        selected: list[tuple[dict[str, Any], Any | None]] = []
+        prepared_calls: list[PreparedToolCall] = []
         requests: list[tuple[Any, dict[str, Any]]] = []
         request_indexes: list[int] = []
         executions: list[ToolExecutionResult | None] = [None] * len(batch)
         for index, call in enumerate(batch):
-            tool = self.tools.get(call["name"])
-            metadata = dict(getattr(tool, "metadata", None) or {})
-            canonical_name = str(metadata.get("canonical_tool_name") or call["name"])
-            calls.append(ToolCallSpec(name=canonical_name, arguments=call.get("args", {})))
-            selected.append((call, tool))
-            emit_event(
-                "AGENT_TOOL_CALLED", thread_id=thread_id, agent_name=self.name,
-                tool_name=call["name"], step=step, tool_input=call.get("args", {}),
-                parallel=True,
+            prepared = self._prepare_tool_call(
+                call, calls, context, step, parallel=True
             )
-            if tool is None:
-                executions[index] = ToolExecutionResult(
-                    False,
-                    {"error": ToolErrorCategory.UNAUTHORIZED.value,
-                     "message": f"工具未授权: {call['name']}"},
-                    0, 0, ToolErrorCategory.UNAUTHORIZED,
-                    f"工具未授权: {call['name']}",
-                )
+            prepared_calls.append(prepared)
+            if prepared.tool is None:
+                executions[index] = self._unauthorized_execution(call)
             else:
                 request_indexes.append(index)
-                requests.append((tool, call.get("args", {})))
-        context.metrics.tool_calls = len(calls)
+                requests.append((prepared.tool, call.get("args", {})))
         parallel_results = self.tool_executor.execute_many(
             requests,
             self.config,
@@ -870,54 +1136,18 @@ class AgentHarness:
         for index, execution in zip(request_indexes, parallel_results):
             executions[index] = execution
 
-        for (call, _tool), execution in zip(selected, executions):
+        for prepared, execution in zip(prepared_calls, executions):
             assert execution is not None
-            context.metrics.tool_attempts += execution.attempts
-            observation = {
-                "tool": call["name"], "data": execution.output,
-                "success": execution.success,
-                "error_category": execution.category.value if execution.category else None,
-                "attempts": execution.attempts,
-                "duration_ms": round(execution.duration_ms, 2),
-            }
-            observations.append(observation)
-            if execution.success:
-                self.middleware.call("after_tool", context, call, observation)
-                event = "AGENT_TOOL_COMPLETED"
-            else:
-                self.middleware.call("on_tool_error", context, call, observation)
-                category = execution.category or ToolErrorCategory.TOOL_ERROR
-                safe_data = observation.get("data")
-                safe_message = (safe_data.get("message") if isinstance(safe_data, dict)
-                                else str(safe_data)) or execution.message
-                errors.append(f"{call['name']}: [{category.value}] {safe_message}")
-                event = "AGENT_TOOL_TIMED_OUT" if category == ToolErrorCategory.TIMEOUT else "AGENT_TOOL_FAILED"
-            emit_event(
-                event, thread_id=thread_id, agent_name=self.name,
-                tool_name=call["name"], step=step,
-                attempts=execution.attempts,
-                duration_ms=round(execution.duration_ms, 2),
-                error_category=(execution.category.value if execution.category else None),
-                canonical_tool_name=observation["tool"],
-                tool_source=observation["source_metadata"]["source"],
-                receipt_id=observation["receipt"]["receipt_id"], parallel=True,
+            self._finalize_tool_call(
+                prepared,
+                execution,
+                context,
+                observations,
+                errors,
+                active_messages,
+                step,
+                parallel=True,
             )
-            compressed, was_compressed, original_chars = compress_observation(
-                observation["data"], self.config.observation_max_chars,
-                self.config.observation_max_items,
-            )
-            if was_compressed:
-                emit_event(
-                    "AGENT_OBSERVATION_COMPRESSED", thread_id=thread_id,
-                    agent_name=self.name, tool_name=call["name"],
-                    original_chars=original_chars,
-                    compressed_chars=len(json.dumps(compressed, ensure_ascii=False, default=str)),
-                )
-            active_messages.append(ToolMessage(
-                content=json.dumps(compressed, ensure_ascii=False, default=str),
-                tool_call_id=call["id"], name=call["name"],
-            ))
-        self._budget_event(context)
         return True, None
 
     def execute(
@@ -1068,19 +1298,6 @@ class AgentHarness:
                         )
                         continue
 
-                    selected_tool = self.tools.get(call["name"])
-                    selected_metadata = dict(
-                        getattr(selected_tool, "metadata", None) or {}
-                    )
-                    canonical_name = str(
-                        selected_metadata.get("canonical_tool_name") or call["name"]
-                    )
-                    calls.append(
-                        ToolCallSpec(
-                            name=canonical_name, arguments=call.get("args", {})
-                        )
-                    )
-                    context.metrics.tool_calls = len(calls)
                     try:
                         self.middleware.call("before_tool", context, call)
                     except (
@@ -1117,156 +1334,22 @@ class AgentHarness:
                         )
                         loop_stopped = True
                         break
-
-                    tool = selected_tool
-                    emit_event(
-                        "AGENT_TOOL_CALLED",
-                        thread_id=thread_id,
-                        agent_name=self.name,
-                        tool_name=call["name"],
-                        step=step,
-                        tool_input=call.get("args", {}),
+                    prepared = self._prepare_tool_call(
+                        call, calls, context, step, parallel=False
                     )
-                    if tool is None:
-                        execution = ToolExecutionResult(
-                            False,
-                            {
-                                "error": ToolErrorCategory.UNAUTHORIZED.value,
-                                "message": f"工具未授权: {call['name']}",
-                            },
-                            0,
-                            0,
-                            ToolErrorCategory.UNAUTHORIZED,
-                            f"工具未授权: {call['name']}",
-                        )
-                    else:
-                        metadata = getattr(tool, "metadata", None) or {}
-                        with traced_span(
-                            f"tool.{call['name']}",
-                            "tool",
-                            {
-                                "agent.name": self.name,
-                                "tool.name": call["name"],
-                                "tool.transport": metadata.get(
-                                    "tool_transport", "local"
-                                ),
-                                "agent.step": step,
-                            },
-                        ) as tool_span:
-                            execution = self.tool_executor.execute(
-                                tool,
-                                call.get("args", {}),
-                                self.config,
-                                on_retry=lambda category, attempt, exc, tool_name=call["name"], current_step=step: (
-                                    emit_event(
-                                        "AGENT_TOOL_RETRYING",
-                                        thread_id=thread_id,
-                                        agent_name=self.name,
-                                        tool_name=tool_name,
-                                        step=current_step,
-                                        failed_attempt=attempt,
-                                        error_category=category.value,
-                                        error=str(exc),
-                                    )
-                                ),
-                                cancel_check=lambda: raise_if_stopped(thread_id),
-                            )
-                            tool_span.set_attribute("tool.attempts", execution.attempts)
-                            tool_span.set_attribute(
-                                "tool.result_count",
-                                len(execution.output)
-                                if isinstance(execution.output, list)
-                                else 1,
-                            )
-                    context.metrics.tool_attempts += execution.attempts
-                    observation = {
-                        "tool": call["name"],
-                        "data": execution.output,
-                        "success": execution.success,
-                        "error_category": execution.category.value
-                        if execution.category
-                        else None,
-                        "attempts": execution.attempts,
-                        "duration_ms": round(execution.duration_ms, 2),
-                    }
-                    observations.append(observation)
-                    if execution.success:
-                        self.middleware.call("after_tool", context, call, observation)
-                        emit_event(
-                            "AGENT_TOOL_COMPLETED",
-                            thread_id=thread_id,
-                            agent_name=self.name,
-                            tool_name=call["name"],
-                            step=step,
-                            attempts=execution.attempts,
-                            duration_ms=round(execution.duration_ms, 2),
-                            result_count=len(observation["data"])
-                            if isinstance(observation["data"], list)
-                            else 1,
-                            canonical_tool_name=observation["tool"],
-                            tool_source=observation["source_metadata"]["source"],
-                            receipt_id=observation["receipt"]["receipt_id"],
-                            tool_output=observation["data"],
-                        )
-                    else:
-                        category = execution.category or ToolErrorCategory.TOOL_ERROR
-                        self.middleware.call(
-                            "on_tool_error", context, call, observation
-                        )
-                        safe_data = observation.get("data")
-                        safe_message = (
-                            safe_data.get("message")
-                            if isinstance(safe_data, dict)
-                            else str(safe_data)
-                        ) or execution.message
-                        errors.append(
-                            f"{call['name']}: [{category.value}] {safe_message}"
-                        )
-                        event = (
-                            "AGENT_TOOL_TIMED_OUT"
-                            if category == ToolErrorCategory.TIMEOUT
-                            else "AGENT_TOOL_FAILED"
-                        )
-                        emit_event(
-                            event,
-                            thread_id=thread_id,
-                            agent_name=self.name,
-                            tool_name=call["name"],
-                            step=step,
-                            attempts=execution.attempts,
-                            error_category=category.value,
-                            error=safe_message,
-                            canonical_tool_name=observation["tool"],
-                            tool_source=observation["source_metadata"]["source"],
-                            receipt_id=observation["receipt"]["receipt_id"],
-                        )
-
-                    compressed, was_compressed, original_chars = compress_observation(
-                        observation["data"],
-                        self.config.observation_max_chars,
-                        self.config.observation_max_items,
+                    execution = self._execute_prepared_call(
+                        prepared, context, step, parallel=False
                     )
-                    if was_compressed:
-                        emit_event(
-                            "AGENT_OBSERVATION_COMPRESSED",
-                            thread_id=thread_id,
-                            agent_name=self.name,
-                            tool_name=call["name"],
-                            original_chars=original_chars,
-                            compressed_chars=len(
-                                json.dumps(compressed, ensure_ascii=False, default=str)
-                            ),
-                        )
-                    active_messages.append(
-                        ToolMessage(
-                            content=json.dumps(
-                                compressed, ensure_ascii=False, default=str
-                            ),
-                            tool_call_id=call["id"],
-                            name=call["name"],
-                        )
+                    self._finalize_tool_call(
+                        prepared,
+                        execution,
+                        context,
+                        observations,
+                        errors,
+                        active_messages,
+                        step,
+                        parallel=False,
                     )
-                    self._budget_event(context)
                 emit_event(
                     "AGENT_STEP_COMPLETED",
                     thread_id=thread_id,

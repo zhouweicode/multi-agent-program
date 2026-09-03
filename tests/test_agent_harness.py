@@ -2,7 +2,9 @@ import asyncio
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 
@@ -13,6 +15,11 @@ from agents.harness import (
     ToolErrorCategory,
     ToolExecutor,
     classify_tool_error,
+)
+from agents.runtime_resources import (
+    BoundedExecutor,
+    RuntimeCapacityError,
+    ToolHealthRegistry,
 )
 from agents.task_policy import RequiredFactsCompletionPolicy, build_retrieval_plan
 from agents.verification_agent import VerificationAgent
@@ -369,6 +376,8 @@ def test_harness_executes_model_tool_batch_concurrently_and_preserves_order():
     ).execute(_messages())
     assert running["maximum"] == 2
     assert [item["data"]["value"] for item in result.observations] == [1, 2]
+    assert all(item["receipt"] for item in result.observations)
+    assert all(item["source_metadata"] for item in result.observations)
 
 
 def test_harness_stops_after_repeated_empty_observations_without_progress():
@@ -577,3 +586,138 @@ def test_harness_returns_auditable_result_when_run_is_cancelled():
         assert result.errors == ["查询已取消"]
     finally:
         clear_run(thread_id)
+
+
+def test_circuit_state_is_shared_across_tool_executor_instances():
+    health = ToolHealthRegistry()
+    invocation = BoundedExecutor(2, 2, "test-shared-invoke")
+    orchestration = BoundedExecutor(2, 2, "test-shared-orchestrate")
+
+    @tool
+    def unavailable_tool() -> dict:
+        """Always fail with a transient provider error."""
+        raise ConnectionError("provider unavailable")
+
+    shared_tool = unavailable_tool.model_copy(update={
+        "metadata": {"tool_source": "shared:test"},
+    })
+    config = HarnessConfig(
+        tool_max_retries=0, circuit_breaker_threshold=1,
+        circuit_breaker_reset_seconds=60,
+    )
+    try:
+        first_executor = ToolExecutor(health, invocation, orchestration)
+        second_executor = ToolExecutor(health, invocation, orchestration)
+        failed = first_executor.execute(shared_tool, {}, config)
+        blocked = second_executor.execute(shared_tool, {}, config)
+        assert failed.category == ToolErrorCategory.PROVIDER_UNAVAILABLE
+        assert blocked.category == ToolErrorCategory.CIRCUIT_OPEN
+        assert blocked.attempts == 0
+    finally:
+        invocation.shutdown()
+        orchestration.shutdown()
+
+
+def test_provider_bulkhead_rejects_excess_concurrency_without_calling_tool():
+    health = ToolHealthRegistry()
+    invocation = BoundedExecutor(2, 2, "test-bulkhead-invoke")
+    orchestration = BoundedExecutor(2, 2, "test-bulkhead-orchestrate")
+    entered = threading.Event()
+    release = threading.Event()
+    quick_calls = {"value": 0}
+
+    @tool
+    def blocking_tool() -> dict:
+        """Hold one provider slot."""
+        entered.set()
+        release.wait(1)
+        return {"ok": True}
+
+    @tool
+    def quick_tool() -> dict:
+        """Would consume another slot from the same provider."""
+        quick_calls["value"] += 1
+        return {"ok": True}
+
+    metadata = {"tool_source": "limited:provider"}
+    blocking = blocking_tool.model_copy(update={"metadata": metadata})
+    quick = quick_tool.model_copy(update={"metadata": metadata})
+    executor = ToolExecutor(health, invocation, orchestration)
+    config = HarnessConfig(
+        provider_max_concurrency=1,
+        capacity_acquire_timeout_seconds=0.005,
+        tool_max_retries=0,
+    )
+    try:
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            first = caller.submit(executor.execute, blocking, {}, config)
+            assert entered.wait(0.5)
+            rejected = executor.execute(quick, {}, config)
+            release.set()
+            assert first.result(timeout=1).success is True
+        assert rejected.category == ToolErrorCategory.PROVIDER_BUSY
+        assert rejected.attempts == 1
+        assert quick_calls["value"] == 0
+        assert health.snapshot()["provider_inflight"]["limited:provider"] == 0
+    finally:
+        release.set()
+        invocation.shutdown()
+        orchestration.shutdown()
+
+
+def test_bounded_executor_keeps_timed_out_work_inside_capacity_limit():
+    executor = BoundedExecutor(1, 0, "test-bounded")
+    release = threading.Event()
+    try:
+        with pytest.raises(TimeoutError):
+            executor.invoke(release.wait, 1, timeout=0.005)
+        with pytest.raises(RuntimeCapacityError, match="线程池已饱和"):
+            executor.submit(lambda: None, acquire_timeout=0)
+    finally:
+        release.set()
+        executor.shutdown()
+
+
+def test_model_executor_prefers_native_async_invocation():
+    class NativeAsyncModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            raise AssertionError("sync invoke must not be used")
+
+        async def ainvoke(self, messages):
+            await asyncio.sleep(0)
+            return AIMessage(content="native async")
+
+    result = AgentHarness(
+        "native_async_model", NativeAsyncModel(), []
+    ).execute(_messages())
+    assert result.final_response == "native async"
+
+
+def test_native_async_tool_obeys_harness_timeout():
+    @tool
+    async def slow_async_tool() -> dict:
+        """Sleep past the Harness deadline."""
+        await asyncio.sleep(0.05)
+        return {"late": True}
+
+    class OnceModel:
+        def bind_tools(self, tools):
+            return self
+
+        def invoke(self, messages):
+            if any(isinstance(message, ToolMessage) for message in messages):
+                return AIMessage(content="done")
+            return AIMessage(content="call", tool_calls=[{
+                "name": "slow_async_tool", "args": {},
+                "id": "slow-async-1", "type": "tool_call",
+            }])
+
+    result = AgentHarness(
+        "async_timeout_agent", OnceModel(), [slow_async_tool],
+        config=HarnessConfig(tool_timeout_seconds=0.003, tool_max_retries=0),
+    ).execute(_messages())
+    assert result.observations[0]["error_category"] == "TIMEOUT"
+    assert result.observations[0]["attempts"] == 1

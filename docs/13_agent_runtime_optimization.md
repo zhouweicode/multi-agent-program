@@ -43,8 +43,9 @@ Verification 不再只验证“核心科研合作伙伴”。当前支持科研�
 
 ## 6. 同轮 Tool 并发和异步入口
 
-真实模型一次返回多个相互独立 Tool Call 时，Harness 使用有界线程池并发执行，并按模型原始顺序写回
-ToolMessage。`max_parallel_tools` 限制并发度，调用预算、Middleware、回执和 Observation 压缩仍逐项生效。
+真实模型一次返回多个相互独立 Tool Call 时，Harness 使用进程级有界编排池并发执行，并按模型原始顺序
+写回 ToolMessage。`max_parallel_tools` 限制单批次并发度，调用预算、Middleware、回执和 Observation
+压缩仍逐项生效。串行和并行路径共用同一套 Tool 准备、Observation 治理、事件、回执及压缩代码。
 
 `AgentHarness.aexecute()` 为异步服务提供非阻塞入口；原同步 API 保持兼容。原生异步 LangChain Tool
 通过 `ainvoke` 执行并接受单次超时约束。
@@ -52,11 +53,17 @@ ToolMessage。`max_parallel_tools` 限制并发度，调用预算、Middleware�
 ## 7. 模型和 Tool 韧性治理
 
 模型调用增加独立超时、错误分类和有限指数退避重试。Tool 仅在超时、限流或提供方不可用等瞬态错误上
-重试；元数据为 `idempotent=false` 的 Tool 永不自动重试。连续瞬态失败会打开进程内熔断器，并在恢复
-窗口后半开重试。重试等待和调用边界都会检查 Run 取消信号。
+重试；元数据为 `idempotent=false` 的 Tool 永不自动重试。连续瞬态失败会打开所有 Harness 共享的
+进程级熔断器，并在恢复窗口后只放行一个半开探针。Provider bulkhead 对 local 领域或 MCP Server 的
+并发调用设置硬上限，容量不足时快速返回 `PROVIDER_BUSY`。
 
-需要注意：当前熔断状态是单进程内存状态，不是 Redis 分布式熔断；同步 Provider 超时后由守护线程隔离，
-Python 无法强制终止已进入第三方阻塞调用的线程。生产 Provider 应同时配置客户端原生超时。
+同步模型和 Tool 统一进入“运行数 + 排队数”均有上限的共享线程池，超时任务在底层返回前仍占用容量，
+因此故障期间不会继续无限创建线程。实现了原生异步接口的模型和 Tool 进入共享事件循环，通过 Future
+取消传播超时。重试等待和调用边界都会检查 Run 取消信号。
+
+需要注意：当前共享状态的范围是单个服务进程，不是 Redis 分布式熔断。Python 仍无法强制终止已经进入
+第三方阻塞代码的同步线程，但该线程会持续占用有界池容量，后续请求将快速失败而不是无限增生线程。
+生产 Provider 仍应同时配置 HTTP、数据库或 SDK 的客户端原生超时。
 
 ## 8. 查询经验分级辅助
 
@@ -93,6 +100,13 @@ AGENT_RETRY_MAX_SECONDS=2
 AGENT_RETRY_JITTER_SECONDS=0.05
 AGENT_CIRCUIT_BREAKER_THRESHOLD=5
 AGENT_CIRCUIT_BREAKER_RESET_SECONDS=30
+AGENT_PROVIDER_MAX_CONCURRENCY=8
+AGENT_CAPACITY_ACQUIRE_TIMEOUT_SECONDS=0.1
+AGENT_INVOCATION_MAX_WORKERS=32
+AGENT_INVOCATION_MAX_QUEUE=64
+AGENT_ORCHESTRATION_MAX_WORKERS=16
+AGENT_ORCHESTRATION_MAX_QUEUE=32
+AGENT_ASYNC_MAX_INFLIGHT=64
 AGENT_PARALLEL_TOOL_CALLS=true
 AGENT_MAX_PARALLEL_TOOLS=4
 AGENT_NO_PROGRESS_THRESHOLD=3
