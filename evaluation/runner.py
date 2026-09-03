@@ -10,7 +10,6 @@ from statistics import mean
 from typing import Any
 from uuid import uuid4
 
-
 QUALITY_METRICS = (
     "entity_recall_at_10",
     "entity_auto_precision",
@@ -41,7 +40,7 @@ def load_cases(path: str | Path) -> list[dict[str, Any]]:
     return rows
 
 
-def _ratio(numerator: int | float, denominator: int | float) -> float | None:
+def _ratio(numerator: float, denominator: float) -> float | None:
     return round(float(numerator) / float(denominator), 4) if denominator else None
 
 
@@ -96,8 +95,9 @@ def _evaluate_routing(case: dict[str, Any]) -> dict[str, Any]:
 
 
 def _invoke_workflow(case: dict[str, Any]) -> dict[str, Any]:
-    from graph.builder import build_graph
     from langgraph.types import Command
+
+    from graph.builder import build_graph
 
     graph = build_graph()
     config = {"configurable": {"thread_id": f"golden-{case['case_id']}-{uuid4().hex}"}}
@@ -105,6 +105,12 @@ def _invoke_workflow(case: dict[str, Any]) -> dict[str, Any]:
     state = graph.invoke({
         "question": payload["question"],
         "web_search_enabled": payload.get("web_search_enabled", False),
+        # Offline golden cases must not depend on mutable user memory unless the
+        # case explicitly opts in and provides an isolated scope.
+        "memory_enabled": payload.get("memory_enabled", False),
+        "experience_memory_enabled": payload.get(
+            "experience_memory_enabled", False
+        ),
         "max_replans": payload.get("max_replans", 2),
         "replan_count": 0,
         "resolved_entities": {},
@@ -146,6 +152,23 @@ def _evaluate_workflow(case: dict[str, Any]) -> dict[str, Any]:
         "answer": all(term in answer for term in expected.get("answer_contains", [])),
         "validation": state.get("validation_result", {}).get("valid") == expected.get("validation_valid", True),
     }
+    task_results = [
+        entry.get("result", {})
+        for entry in state.get("task_results", {}).values()
+        if entry.get("result")
+    ]
+    if not task_results:
+        task_results = [
+            state.get(f"{domain}_result") or {}
+            for domain in ("talent", "achievement", "enterprise", "industry", "graph", "web")
+            if state.get(f"{domain}_result")
+        ]
+    agent_errors = [
+        error for result in task_results for error in result.get("errors", [])
+    ]
+    stop_reasons = [
+        result.get("stop_reason", "completed") for result in task_results
+    ]
     return {
         "case_id": case["case_id"], "case_type": "workflow", "passed": all(checks.values()),
         "checks": checks, "actual_agents": sorted(actual_agents), "actual_tools": sorted(actual_tools),
@@ -154,18 +177,43 @@ def _evaluate_workflow(case: dict[str, Any]) -> dict[str, Any]:
         "valid_citations": valid_citations, "duration_ms": round(duration_ms, 3),
         "replan_count": int(state.get("replan_count", 0) or 0),
         "validation": state.get("validation_result", {}),
+        "agent_run_count": len(task_results),
+        "agent_errors": agent_errors,
+        "agent_stop_reasons": stop_reasons,
+        "incomplete_agent_count": sum(
+            result.get("completion_status") == "incomplete"
+            for result in task_results
+        ),
+        "invalid_tool_call_count": sum(
+            "UNAUTHORIZED" in error for error in agent_errors
+        ),
+        "agent_total_tokens": sum(
+            int(result.get("metrics", {}).get("total_tokens", 0) or 0)
+            for result in task_results
+        ),
+        "agent_total_cost": round(sum(
+            float(result.get("metrics", {}).get("cost", 0) or 0)
+            for result in task_results
+        ), 8),
     }
+
+
+def evaluate_case(case: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate one case; shared by deterministic CI and repeated live runs."""
+    evaluators = {
+        "entity": _evaluate_entity,
+        "routing": _evaluate_routing,
+        "workflow": _evaluate_workflow,
+    }
+    case_type = case.get("case_type")
+    if case_type not in evaluators:
+        raise ValueError(f"未知 case_type: {case_type}")
+    return evaluators[case_type](case)
 
 
 def evaluate_dataset(path: str | Path) -> dict[str, Any]:
     cases = load_cases(path)
-    evaluators = {"entity": _evaluate_entity, "routing": _evaluate_routing, "workflow": _evaluate_workflow}
-    rows = []
-    for case in cases:
-        case_type = case.get("case_type")
-        if case_type not in evaluators:
-            raise ValueError(f"未知 case_type: {case_type}")
-        rows.append(evaluators[case_type](case))
+    rows = [evaluate_case(case) for case in cases]
 
     counts = Counter(row["case_type"] for row in rows)
     entities = [row for row in rows if row["case_type"] == "entity"]

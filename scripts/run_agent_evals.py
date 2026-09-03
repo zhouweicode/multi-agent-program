@@ -12,6 +12,8 @@ def _configure_mock() -> None:
         "MODEL_PROVIDER": "mock", "ENTITY_BACKEND": "mock", "ACHIEVEMENT_BACKEND": "mock",
         "GRAPH_BACKEND": "mock", "ENTERPRISE_BACKEND": "mock", "INDUSTRY_BACKEND": "mock",
         "EMBEDDING_PROVIDER": "mock", "TOOL_TRANSPORT": "local", "WEB_SEARCH_PROVIDER": "disabled",
+        "MEMORY_BACKEND": "sqlite", "MEMORY_RETRIEVAL_BACKEND": "mysql",
+        "QUERY_EXPERIENCE_MODE": "shadow",
     })
 
 

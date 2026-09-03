@@ -215,14 +215,23 @@ class MockVerificationModel:
     def invoke(self, messages: list[Any]) -> AIMessage:
         context = json.loads(messages[1].content)
         observations = [json.loads(msg.content) for msg in messages if isinstance(msg, ToolMessage)]
-        sequence = [
-            ("verify_evidence", {"evidence_ids": context["evidence_ids"], "entity_ids": context["entity_ids"]}),
-            ("check_source", {"evidence_ids": context["evidence_ids"], "entity_ids": context["entity_ids"]}),
-            ("get_cooperation_timeline", {"entity_ids": context["entity_ids"]}),
-            ("validate_relation", {"entity_ids": context["entity_ids"], "relation": "CORE_RESEARCH_PARTNER"}),
-            ("check_constraints", {"timeline": observations[2] if len(observations) > 2 else [],
-                                   "min_year_span": 2, "min_achievements": 3}),
-        ]
+        plan = context.get("verification_plan") or {
+            "claim_type": "CORE_RESEARCH_PARTNER",
+            "relation": "CORE_RESEARCH_PARTNER",
+            "tool_sequence": ["verify_evidence", "check_source", "get_cooperation_timeline", "validate_relation", "check_constraints"],
+            "constraints": {"min_year_span": 2, "min_achievements": 3},
+        }
+        records = context.get("evidence_records") or []
+        timeline = next((item for index, item in enumerate(observations)
+                         if plan["tool_sequence"][index] == "get_cooperation_timeline"), [])
+        arguments = {
+            "verify_evidence": {"evidence_ids": context["evidence_ids"], "entity_ids": context["entity_ids"], "evidence_records": records},
+            "check_source": {"evidence_ids": context["evidence_ids"], "entity_ids": context["entity_ids"], "evidence_records": records},
+            "get_cooperation_timeline": {"entity_ids": context["entity_ids"]},
+            "validate_relation": {"entity_ids": context["entity_ids"], "relation": plan["relation"]},
+            "check_constraints": {"timeline": timeline, **plan.get("constraints", {})},
+        }
+        sequence = [(name, arguments[name]) for name in plan["tool_sequence"]]
         if len(observations) < len(sequence):
             name, args = sequence[len(observations)]
             visible_name = self.visible_tool_names.get(name)
@@ -232,11 +241,15 @@ class MockVerificationModel:
                 ])
         evidence_ok = bool(observations) and observations[0].get("valid", False)
         sources_ok = len(observations) > 1 and observations[1].get("trusted", False)
-        relation_ok = len(observations) > 3 and observations[3].get("supported", False)
-        constraints_ok = len(observations) > 4 and observations[4].get("satisfied", False)
+        by_tool = dict(zip(plan["tool_sequence"], observations))
+        relation_ok = (by_tool.get("validate_relation", {}).get("supported", False)
+                       if "validate_relation" in plan["tool_sequence"] else True)
+        constraints_ok = (by_tool.get("check_constraints", {}).get("satisfied", False)
+                          if "check_constraints" in plan["tool_sequence"] else True)
         passed = evidence_ok and sources_ok and relation_ok and constraints_ok
         missing = [] if evidence_ok else ["有效科研合作证据"]
-        result = {"status": "PASS" if passed else "FAIL", "relation": "CORE_RESEARCH_PARTNER",
+        result = {"status": "PASS" if passed else "FAIL", "claim_type": plan["claim_type"],
+                  "relation": plan["relation"],
                   "confidence": 0.92 if passed else 0.35,
                   "reason": "共同论文和项目覆盖多个年份，证据来源可信且满足长期稳定合作约束" if passed else "现有证据未满足长期稳定核心合作约束",
                   "needs_replan": not evidence_ok, "missing_evidence": missing}

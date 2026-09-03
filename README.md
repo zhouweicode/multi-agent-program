@@ -452,6 +452,8 @@ pytest -q
 python -m scripts.evaluate_stage9_e2e
 python -m scripts.run_agent_evals --check
 python -m scripts.run_harness_evals --check
+# 配置真实 MODEL_PROVIDER/API Key 后运行小样本重复评测
+python -m scripts.run_live_agent_evals --limit 10 --repeats 2
 ```
 
 当前测试结果以本机 `pytest -q` 输出为准；真实数据库集成采用单独 smoke test，不进入默认 CI。
@@ -477,6 +479,8 @@ CI 使用 `evals/baselines/agentops_v1.json` 同时执行绝对门槛与相对�
 `evals/harness_fault_cases.json` 独立评测 Harness Middleware、重复循环、瞬态故障恢复、超时分类、Observation 压缩和 Token 预算，避免改变业务黄金集的固定规模。
 `evals/expert_report_cases.json` 独立评测专家报告的完整/简版规划、引用有效性、输入保护和可选域故障降级。
 `evals/industry_landscape_cases.json` 独立评测产业全景报告的能力规划、引用有效性、输入保护和联网故障降级。
+`scripts.run_live_agent_evals` 使用真实模型重复运行小样本，报告路由/工作流稳定性、P95 延迟、非法 Tool、
+Agent 不完整结束、无进展停止和平均 Replan；默认拒绝 `MODEL_PROVIDER=mock`，不替代确定性 CI 基线。
 详细设计见 [docs/07_agent_evaluation_observability.md](docs/07_agent_evaluation_observability.md)。
 
 专家报告 Skill 的边界、调用协议和评测见 [docs/09_expert_report_skill.md](docs/09_expert_report_skill.md)。
@@ -484,6 +488,9 @@ CI 使用 `evals/baselines/agentops_v1.json` 同时执行绝对门槛与相对�
 产业全景报告 Skill 的边界、证据规则和评测见 [docs/10_industry_landscape_skill.md](docs/10_industry_landscape_skill.md)。
 
 四层记忆架构、分阶段迁移边界和验收状态见 [docs/11_memory_architecture.md](docs/11_memory_architecture.md)。
+
+九项 Agent 运行时优化（任务实例、Profile、检索计划、完成门禁、验证策略、并发、韧性、经验辅助和真实模型评测）
+见 [docs/13_agent_runtime_optimization.md](docs/13_agent_runtime_optimization.md)。
 
 ## 后续阶段建议
 

@@ -7,6 +7,7 @@ import re
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.harness import AgentHarness, HarnessConfig, HarnessMiddleware
+from agents.verification_policies import VerificationPolicy, get_verification_policy
 from models.llm import ModelFactory
 from models.schemas import ToolCallSpec, VerificationResult
 from services.telemetry import traced_span
@@ -68,7 +69,8 @@ class VerificationAgent:
 
     @staticmethod
     def _result_from_observations(
-        observations: list[dict], calls: list[ToolCallSpec], reason: str
+        observations: list[dict], calls: list[ToolCallSpec], reason: str,
+        policy: VerificationPolicy,
     ) -> dict:
         """模型结论不可解析时，仅依据工具 Observation 形成可审计结论。"""
         by_tool = {item["tool"]: item.get("data") for item in observations}
@@ -76,20 +78,22 @@ class VerificationAgent:
         sources = by_tool.get("check_source") or {}
         relation = by_tool.get("validate_relation") or {}
         constraints = by_tool.get("check_constraints") or {}
-        required = {
-            "verify_evidence",
-            "check_source",
-            "get_cooperation_timeline",
-            "validate_relation",
-            "check_constraints",
-        }
+        required = set(policy.tool_sequence)
         complete = required.issubset(by_tool)
+        relation_ok = (
+            bool(relation.get("supported"))
+            if "validate_relation" in required else True
+        )
+        constraints_ok = (
+            bool(constraints.get("satisfied"))
+            if "check_constraints" in required else True
+        )
         passed = (
             complete
             and evidence.get("valid") is True
             and sources.get("trusted") is True
-            and relation.get("supported") is True
-            and constraints.get("satisfied") is True
+            and relation_ok
+            and constraints_ok
         )
         missing = list(evidence.get("missing") or [])
         if not complete:
@@ -100,7 +104,8 @@ class VerificationAgent:
         )
         return VerificationResult(
             status="PASS" if passed else "FAIL",
-            relation="CORE_RESEARCH_PARTNER",
+            claim_type=policy.claim_type,
+            relation=policy.relation,
             confidence=0.9 if passed else 0.35,
             reason=f"模型结论不可解析，已按验证工具结果确定性判定（{reason}）；{details}",
             needs_replan=not bool(evidence.get("valid")) or not complete,
@@ -114,6 +119,8 @@ class VerificationAgent:
         question: str,
         entity_ids: list[str],
         evidence_ids: list[str],
+        evidence_records: list[dict] | None = None,
+        claim_type: str | None = None,
         thread_id: str | None = None,
     ) -> dict:
         with traced_span(
@@ -125,7 +132,10 @@ class VerificationAgent:
                 "agent.evidence_count": len(evidence_ids),
             },
         ) as span:
-            result = self._run_impl(question, entity_ids, evidence_ids, thread_id)
+            result = self._run_impl(
+                question, entity_ids, evidence_ids, evidence_records or [],
+                claim_type, thread_id,
+            )
             span.set_attribute(
                 "agent.tool_call_count", len(result.get("tool_calls", []))
             )
@@ -136,14 +146,17 @@ class VerificationAgent:
         question: str,
         entity_ids: list[str],
         evidence_ids: list[str],
+        evidence_records: list[dict],
+        claim_type: str | None,
         thread_id: str | None = None,
     ) -> dict:
+        policy = get_verification_policy(claim_type, question)
         messages = [
             SystemMessage(
                 content=(
-                    "你是证据验证 Agent。必须调用工具验证证据、来源、时间线、关系和约束，禁止使用模型自身知识。"
+                    "你是证据验证 Agent。严格按照 verification_plan 调用其中列出的工具，禁止使用模型自身知识。"
                     "完成全部必要工具后，返回且只返回 JSON："
-                    '{"status":"PASS|FAIL","relation":"CORE_RESEARCH_PARTNER","confidence":0到1,'
+                    '{"status":"PASS|FAIL","claim_type":"结论类型","relation":"关系","confidence":0到1,'
                     '"reason":"依据","needs_replan":true或false,"missing_evidence":[]}'
                 )
             ),
@@ -153,6 +166,8 @@ class VerificationAgent:
                         "question": question,
                         "entity_ids": entity_ids,
                         "evidence_ids": evidence_ids,
+                        "evidence_records": evidence_records,
+                        "verification_plan": policy.as_dict(),
                     },
                     ensure_ascii=False,
                 )
@@ -163,17 +178,24 @@ class VerificationAgent:
             try:
                 payload = self._parse_result(run.final_response)
                 return VerificationResult(
-                    **payload, tool_calls=run.tool_calls, observations=run.observations
+                    **({
+                        **payload,
+                        "claim_type": payload.get("claim_type", policy.claim_type),
+                        "relation": payload.get("relation", policy.relation),
+                    }),
+                    tool_calls=run.tool_calls, observations=run.observations
                 ).model_dump()
             except (ValueError, TypeError, json.JSONDecodeError) as exc:
                 logger.warning(
                     "Verification 模型结论解析失败，回退到工具确定性判定: %s", exc
                 )
                 return self._result_from_observations(
-                    run.observations, run.tool_calls, str(exc)
+                    run.observations, run.tool_calls, str(exc), policy
                 )
         reason = "; ".join(run.errors) or run.stop_reason
-        return self._result_from_observations(run.observations, run.tool_calls, reason)
+        return self._result_from_observations(
+            run.observations, run.tool_calls, reason, policy
+        )
 
 
 def build_verification_agent() -> VerificationAgent:

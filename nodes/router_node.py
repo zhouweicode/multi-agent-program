@@ -2,6 +2,7 @@
 import logging
 import re
 
+from agents.verification_policies import infer_claim_type
 from graph.state import GraphRAGState
 from models.llm import ModelFactory
 from services.observability import emit_event
@@ -17,19 +18,32 @@ logger = logging.getLogger(__name__)
 DOMAIN_KEYWORDS = {
     "achievement": ("论文", "发表", "专利", "科研成果", "科研项目", "学术成果"),
     "talent": ("在哪里工作", "工作单位", "任职", "履历", "教育经历", "同事", "校友", "专家画像"),
-    "enterprise": ("企业任职", "公司任职", "企业顾问", "企业项目", "企业专利", "技术合作"),
-    "industry": ("产业链", "产业节点", "产业事件", "产业全景"),
+    "enterprise": (
+        "企业任职", "公司任职", "企业顾问", "企业项目", "企业专利", "技术合作",
+        "企业关系", "企业关联", "公司关系",
+    ),
+    "industry": ("产业链", "产业节点", "产业事件", "产业全景", "产业关联", "产业归属"),
     "graph": (
         "间接关系", "多跳", "路径", "一跳邻居", "过滤邻居", "局部子图", "关系强度",
         "图统计", "图聚合", "图 Schema", "图Schema", "图模式", "图谱结构",
     ),
-    "web": ("联网", "网络搜索", "外部来源", "公开资料", "官网", "新闻", "最新", "近期", "实时", "查证"),
+    "web": (
+        "联网", "网络搜索", "外部来源", "公开来源", "公开资料", "官网", "新闻",
+        "最新", "近期", "实时", "查证", "网页事实",
+    ),
 }
 
 _PERSON_NAME_RE = re.compile(r"^[\u4e00-\u9fff]{2,4}$")
 _NON_PERSON_SUFFIXES = ("大学", "学院", "研究院", "研究所", "实验室", "公司", "集团", "产业", "协会", "中心")
 _NON_PERSON_PREFIXES = ("分析", "查询", "对比", "验证", "判断", "综合", "联网")
 _VERIFICATION_KEYWORDS = ("长期稳定", "核心科研合作伙伴", "稳定的产学研合作", "合作验证", "语义验证")
+_CLAIM_VERIFICATION_PATTERNS = (
+    "科研合作是否成立", "合作关系是否成立",
+    "企业关联是否成立", "企业关系是否成立", "公司关系是否成立",
+    "产业关联是否成立", "产业归属是否成立",
+    "路径是否存在", "路径是否", "是否连通", "多跳关系是否",
+    "网页事实是否", "公开来源是否", "新闻是否可信",
+)
 
 
 def _looks_like_person_name(value: str) -> bool:
@@ -91,9 +105,16 @@ def _apply_web_search_policy(question: str, output, enabled: bool):
 
 def _apply_verification_guardrail(question: str, output):
     """Verification只处理明确的复杂关系判断，避免普通事实查询误入验证链路。"""
-    required = any(keyword in question for keyword in _VERIFICATION_KEYWORDS)
-    return output if output.requires_verification == required else output.model_copy(
-        update={"requires_verification": required})
+    required = any(
+        keyword in question
+        for keyword in (*_VERIFICATION_KEYWORDS, *_CLAIM_VERIFICATION_PATTERNS)
+    )
+    claim_type = infer_claim_type(question) if required else None
+    updates = {
+        "requires_verification": required,
+        "verification_claim_type": claim_type,
+    }
+    return output.model_copy(update=updates)
 
 
 def router_node(state: GraphRAGState) -> dict:

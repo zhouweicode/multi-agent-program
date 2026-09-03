@@ -1,4 +1,5 @@
 """Merge Node：汇总领域结果、证据与任务历史。"""
+from graph.routing import task_completion_key
 from graph.state import GraphRAGState
 from services.observability import emit_event
 
@@ -12,9 +13,15 @@ def merge_node(state: GraphRAGState) -> dict:
     history = list(state.get("task_history", []))
     results_by_agent = {result["agent"]: result for result in results if result}
     attempt = state.get("replan_count", 0)
+    task_results = state.get("task_results", {})
     for task in state.get("tasks", []):
-        result = results_by_agent.get(task["agent"])
-        entry = {"task_id": task["task_id"], "agent": task["agent"], "attempt": attempt,
+        task_id = task.get("task_id")
+        task_entry = (
+            task_results.get(task_completion_key(task_id, attempt), {})
+            if task_id else {}
+        )
+        result = task_entry.get("result") or results_by_agent.get(task["agent"])
+        entry = {"task_id": task_id or task["agent"], "agent": task["agent"], "attempt": attempt,
                  "status": "error" if result and result.get("errors") else "completed"}
         if not any(item.get("task_id") == entry["task_id"] and item.get("attempt") == attempt for item in history):
             history.append(entry)

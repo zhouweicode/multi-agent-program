@@ -1,6 +1,6 @@
 """统一证据服务；Verification 不直接依赖 Mock 常量或具体数据库。"""
-from services.achievement_service import AchievementService
 from repositories.evidence_repository import EvidenceRepository
+from services.achievement_service import AchievementService
 
 
 class EvidenceService:
@@ -21,19 +21,36 @@ class EvidenceService:
         rows = self.cooperation_rows(entity_ids) if entity_ids else []
         return {row["evidence_id"]: row for row in rows if row.get("evidence_id")}
 
-    def verify(self, evidence_ids: list[str], entity_ids: list[str] | None = None) -> dict:
+    def verify(self, evidence_ids: list[str], entity_ids: list[str] | None = None,
+               evidence_records: list[dict] | None = None) -> dict:
+        supplied = {str(item.get("evidence_id")): item for item in evidence_records or []
+                    if item.get("evidence_id")}
         available = self._available(entity_ids)
         non_research_prefixes = ("ev_employment_", "ev_role_", "ev_company_", "ev_event_", "ev_graph_")
         missing = [evidence_id for evidence_id in evidence_ids
-                   if evidence_id not in available and not evidence_id.startswith(non_research_prefixes)]
+                   if evidence_id not in available and evidence_id not in supplied
+                   and not evidence_id.startswith(non_research_prefixes)]
         return {"valid": bool(evidence_ids) and not missing, "checked_count": len(evidence_ids), "missing": missing}
 
-    def check_sources(self, evidence_ids: list[str], entity_ids: list[str] | None = None) -> dict:
+    def check_sources(self, evidence_ids: list[str], entity_ids: list[str] | None = None,
+                      evidence_records: list[dict] | None = None) -> dict:
+        supplied = {str(item.get("evidence_id")): item for item in evidence_records or []
+                    if item.get("evidence_id")}
         available = self._available(entity_ids)
         trusted_sources = ("mock:", "mysql:")
-        untrusted = [evidence_id for evidence_id in evidence_ids
-                     if evidence_id not in available or not str(available[evidence_id].get("source", "")).startswith(trusted_sources)]
-        sources = sorted({available[item]["source"] for item in evidence_ids if item in available})
+        resolved = {
+            evidence_id: available.get(evidence_id) or supplied.get(evidence_id)
+            for evidence_id in evidence_ids
+        }
+        def trusted(record: dict | None) -> bool:
+            if not record:
+                return False
+            source_type = str(record.get("source_type") or "")
+            source = str(record.get("source") or record.get("source_name") or "")
+            return source_type in {"mysql", "neo4j", "milvus", "mock", "derived", "web"} or source.startswith(trusted_sources)
+        untrusted = [evidence_id for evidence_id, record in resolved.items() if not trusted(record)]
+        sources = sorted({str(record.get("source") or record.get("source_name"))
+                          for record in resolved.values() if record})
         return {"trusted": bool(evidence_ids) and not untrusted, "untrusted": untrusted, "sources": sources}
 
     def relation(self, entity_ids: list[str], relation: str) -> dict:

@@ -84,3 +84,12 @@ def test_factual_web_query_cannot_be_misrouted_to_relation_verification(monkeypa
     result = router_node({"question": "清华大学是什么时候成立的？", "web_search_enabled": True})
     assert result["primary_domain"] == "web"
     assert result["requires_verification"] is False
+
+
+def test_claim_specific_verification_guardrail_sets_enterprise_policy(monkeypatch):
+    monkeypatch.setattr(ModelFactory, "structured_model", lambda: WrongDomainModel())
+    monkeypatch.setattr("nodes.router_node.get_entity_service", lambda: NoAuthoritativeMentions())
+    result = router_node({"question": "验证张伟和李明的企业关系是否成立"})
+    assert result["primary_domain"] == "enterprise"
+    assert result["requires_verification"] is True
+    assert result["verification_claim_type"] == "ENTERPRISE_RELATION"

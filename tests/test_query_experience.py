@@ -4,12 +4,14 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from app.main import app
+from models.schemas import PlannedTask, SupervisorPlan
+from nodes.supervisor_node import _apply_experience_advice
+from services.memory_manager import memory_manager
 from services.query_experience import (
     query_template,
     recall_query_experience,
     write_query_experience,
 )
-from services.memory_manager import memory_manager
 from tests.helpers import wait_for_run
 
 client = TestClient(app)
@@ -180,3 +182,36 @@ def test_private_experience_is_isolated_and_safe_success_is_shared_globally():
     analyst_patterns = manager.list_experience_patterns("user", "user-analyst", 500)
     assert any(sensitive_marker in row["query_template"] for row in researcher_patterns)
     assert not any(sensitive_marker in row["query_template"] for row in analyst_patterns)
+
+
+def test_advisory_and_active_experience_only_apply_whitelisted_hints(monkeypatch):
+    plan = SupervisorPlan(tasks=[
+        PlannedTask(task_id="talent", agent="talent_agent", goal="任职"),
+        PlannedTask(task_id="achievement", agent="achievement_agent", goal="论文"),
+    ], reason="fresh plan")
+    state = {
+        "experience_match": {"applicable": True, "pattern_id": "exp-1"},
+        "experience_route_agreement": True,
+        "experience_strategy": {
+            "agents": ["achievement_agent", "talent_agent"],
+            "tools_by_agent": {
+                "achievement_agent": ["get_author_papers", "delete_database"],
+                "talent_agent": ["get_person_profile"],
+            },
+        },
+    }
+    monkeypatch.setenv("QUERY_EXPERIENCE_MODE", "advisory")
+    advised = _apply_experience_advice(plan, state, False)
+    assert [task.agent for task in advised.tasks] == [
+        "talent_agent", "achievement_agent",
+    ]
+    assert advised.tasks[1].preferred_tools == ["get_author_papers"]
+
+    monkeypatch.setenv("QUERY_EXPERIENCE_MODE", "active")
+    active = _apply_experience_advice(plan, state, False)
+    assert [task.agent for task in active.tasks] == [
+        "achievement_agent", "talent_agent",
+    ]
+    assert "delete_database" not in {
+        name for task in active.tasks for name in task.preferred_tools
+    }

@@ -4,6 +4,13 @@ import operator
 from typing import Annotated, Any, TypedDict
 
 
+def merge_task_results(
+    left: dict[str, dict[str, Any]], right: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Merge independently completed task instances by their generation key."""
+    return {**(left or {}), **(right or {})}
+
+
 class GraphRAGState(TypedDict, total=False):
     user_id: str
     thread_id: str
@@ -46,6 +53,7 @@ class GraphRAGState(TypedDict, total=False):
     complexity: str
     primary_domain: str
     requires_verification: bool
+    verification_claim_type: str
     entity_mentions: list[str]
     resolved_entities: dict[str, str]
     entity_backend_ids: dict[str, dict[str, str]]
@@ -55,7 +63,9 @@ class GraphRAGState(TypedDict, total=False):
     unresolved_mentions: list[str]
     plan: dict[str, Any]
     tasks: list[dict[str, Any]]
+    active_task: dict[str, Any]
     task_completions: Annotated[list[str], operator.add]
+    task_results: Annotated[dict[str, dict[str, Any]], merge_task_results]
     task_history: list[dict[str, Any]]
     talent_result: dict[str, Any]
     achievement_result: dict[str, Any]

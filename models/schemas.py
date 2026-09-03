@@ -10,6 +10,7 @@ class RouterOutput(BaseModel):
     complexity: Literal["simple", "complex"]
     primary_domain: Literal["talent", "achievement", "enterprise", "industry", "graph", "web"]
     requires_verification: bool = False
+    verification_claim_type: str | None = None
 
 
 class EntityCandidate(BaseModel):
@@ -26,6 +27,7 @@ class PlannedTask(BaseModel):
     required_fact_types: list[str] = Field(default_factory=list, description="完成任务必须返回的业务事实类型")
     required_entity_ids: list[str] = Field(default_factory=list, description="任务涉及的规范实体 ID")
     depends_on: list[str] = Field(default_factory=list, description="必须先完成的任务 ID")
+    preferred_tools: list[str] = Field(default_factory=list, description="经安全门禁选出的历史工具建议")
 
 
 class SupervisorPlan(BaseModel):
@@ -39,8 +41,17 @@ class ToolCallSpec(BaseModel):
     arguments: dict[str, Any]
 
 
+class RetrievalPlan(BaseModel):
+    goal: str
+    required_fact_types: list[str] = Field(default_factory=list)
+    candidate_tools: list[str] = Field(default_factory=list)
+    preferred_tools: list[str] = Field(default_factory=list)
+    stop_condition: str
+
+
 class DomainResult(BaseModel):
     agent: str
+    task_id: str | None = None
     summary: str
     response: str | None = Field(default=None, description="Agent 基于 Tool Observation 形成的最终回答")
     facts: list[dict[str, Any]] = Field(default_factory=list)
@@ -50,6 +61,9 @@ class DomainResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
     stop_reason: str = "completed"
+    retrieval_plan: RetrievalPlan | None = None
+    completion_status: Literal["complete", "incomplete"] = "complete"
+    missing_fact_types: list[str] = Field(default_factory=list)
 
 
 class EvidenceRecord(BaseModel):
@@ -75,6 +89,7 @@ class ValidationResult(BaseModel):
 
 class VerificationResult(BaseModel):
     status: Literal["PASS", "FAIL"]
+    claim_type: str = "CORE_RESEARCH_PARTNER"
     relation: str
     confidence: float = Field(ge=0, le=1)
     reason: str

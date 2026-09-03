@@ -4,7 +4,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-from mcp_runtime.config import MCPServerConfig, parse_mcp_servers, parse_transport_overrides
+
+from mcp_runtime.config import (
+    MCPServerConfig,
+    parse_mcp_servers,
+    parse_transport_overrides,
+)
 
 # 所有入口（FastAPI、demo、测试脚本）导入统一配置层时自动加载项目根目录 .env。
 # override=False 保证终端、容器和部署平台显式注入的环境变量拥有更高优先级。
@@ -116,7 +121,7 @@ class Settings:
     query_experience_min_samples: int = 5
     query_experience_min_similarity: float = 0.72
     query_experience_min_confidence: float = 0.75
-    workflow_version: str = "stage12-runtime-skills"
+    workflow_version: str = "stage13-agent-runtime"
     prompt_version: str = "prompt-v1"
     model_input_cost_per_million: float = 0
     model_output_cost_per_million: float = 0
@@ -193,6 +198,10 @@ class Settings:
         if self.memory_retrieval_backend not in {"mysql", "hybrid", "milvus"}:
             raise ValueError(
                 "MEMORY_RETRIEVAL_BACKEND 仅支持 mysql、hybrid 或 milvus"
+            )
+        if self.query_experience_mode not in {"shadow", "advisory", "active"}:
+            raise ValueError(
+                "QUERY_EXPERIENCE_MODE 仅支持 shadow、advisory 或 active"
             )
 
     @classmethod
@@ -288,7 +297,7 @@ class Settings:
                    query_experience_min_samples=int(os.getenv("QUERY_EXPERIENCE_MIN_SAMPLES", "5")),
                    query_experience_min_similarity=float(os.getenv("QUERY_EXPERIENCE_MIN_SIMILARITY", "0.72")),
                    query_experience_min_confidence=float(os.getenv("QUERY_EXPERIENCE_MIN_CONFIDENCE", "0.75")),
-                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage12-runtime-skills"),
+                   workflow_version=os.getenv("WORKFLOW_VERSION", "stage13-agent-runtime"),
                    prompt_version=os.getenv("PROMPT_VERSION", "prompt-v1"),
                    model_input_cost_per_million=float(os.getenv("MODEL_INPUT_COST_PER_MILLION", "0")),
                    model_output_cost_per_million=float(os.getenv("MODEL_OUTPUT_COST_PER_MILLION", "0")),

@@ -6,6 +6,8 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.harness import AgentHarness, HarnessConfig, HarnessMiddleware
+from agents.profiles import get_agent_profile
+from agents.task_policy import RequiredFactsCompletionPolicy, build_retrieval_plan
 from models.schemas import DomainResult
 from services.evidence_normalizer import normalize_tool_output
 from services.telemetry import traced_span
@@ -38,6 +40,9 @@ class ToolCallingDomainAgent(AgentHarness):
     def run(
         self, goal: str, resolved_entities: dict[str, str], thread_id: str | None = None,
         memory_context: str | None = None,
+        *, required_fact_types: list[str] | None = None,
+        task_id: str | None = None,
+        preferred_tools: list[str] | None = None,
     ) -> dict:
         with traced_span(
             f"agent.{self.name}",
@@ -47,7 +52,10 @@ class ToolCallingDomainAgent(AgentHarness):
                 "agent.entity_count": len(resolved_entities),
             },
         ) as span:
-            result = self._run_impl(goal, resolved_entities, thread_id, memory_context)
+            result = self._run_impl(
+                goal, resolved_entities, thread_id, memory_context,
+                required_fact_types, task_id, preferred_tools,
+            )
             span.set_attribute(
                 "agent.tool_call_count", len(result.get("tool_calls", []))
             )
@@ -57,7 +65,15 @@ class ToolCallingDomainAgent(AgentHarness):
     def _run_impl(
         self, goal: str, resolved_entities: dict[str, str], thread_id: str | None = None,
         memory_context: str | None = None,
+        required_fact_types: list[str] | None = None,
+        task_id: str | None = None,
+        preferred_tools: list[str] | None = None,
     ) -> dict:
+        profile = get_agent_profile(self.name)
+        retrieval_plan = build_retrieval_plan(
+            self.name, goal, list(required_fact_types or []), preferred_tools,
+            authorized_tool_names=list(self.tools),
+        )
         relation_instruction = (
             "当前包含多个已解析实体，目标是分析实体之间的关系。优先调用共同、重叠、合作、"
             "路径或聚合类工具取得直接关系证据；不要只返回彼此独立的个人资料。"
@@ -67,7 +83,8 @@ class ToolCallingDomainAgent(AgentHarness):
         messages = [
             SystemMessage(
                 content=(
-                    f"你是 {self.name}。只使用已绑定工具完成目标；每次根据 ToolMessage 决定下一步，"
+                    profile.render()
+                    + f"你是 {self.name}。只使用已绑定工具完成目标；每次根据 ToolMessage 决定下一步，"
                     f"完成后返回无 tool_calls 的消息。{relation_instruction}必须取得足以回答目标的证据后才能结束。"
                     f"整个任务最多调用 {self.max_tool_calls} 次工具；先检索 ID，再只查询最相关的少量对象，禁止穷举全部节点。"
                     f"{self.final_response_instruction}"
@@ -78,12 +95,21 @@ class ToolCallingDomainAgent(AgentHarness):
             ),
             HumanMessage(
                 content=json.dumps(
-                    {"goal": goal, "resolved_entities": resolved_entities},
+                    {
+                        "task_id": task_id,
+                        "goal": goal,
+                        "resolved_entities": resolved_entities,
+                        "retrieval_plan": retrieval_plan.model_dump(),
+                    },
                     ensure_ascii=False,
                 )
             ),
         ]
-        run = self.execute(messages, thread_id)
+        completion_policy = (
+            RequiredFactsCompletionPolicy(retrieval_plan.required_fact_types)
+            if retrieval_plan.required_fact_types else None
+        )
+        run = self.execute(messages, thread_id, completion_policy)
         facts: list[dict[str, Any]] = []
         evidence: list[dict[str, Any]] = []
         errors = list(run.errors)
@@ -100,6 +126,7 @@ class ToolCallingDomainAgent(AgentHarness):
         summary = f"{self.name} 完成 {len(run.tool_calls)} 次工具调用，得到 {len(facts)} 组结果"
         return DomainResult(
             agent=self.name,
+            task_id=task_id,
             summary=summary,
             response=run.final_response,
             facts=facts,
@@ -113,4 +140,7 @@ class ToolCallingDomainAgent(AgentHarness):
             errors=errors,
             metrics=run.metrics,
             stop_reason=run.stop_reason,
+            retrieval_plan=retrieval_plan,
+            completion_status="incomplete" if run.missing_fact_types else "complete",
+            missing_fact_types=run.missing_fact_types,
         ).model_dump()

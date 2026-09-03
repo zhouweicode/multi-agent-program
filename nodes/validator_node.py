@@ -1,6 +1,7 @@
 """Rule Validator：纯 Python 确定性校验，不调用 LLM。"""
 import logging
 
+from graph.routing import task_completion_key
 from graph.state import GraphRAGState
 from models.contracts import (
     AGENT_DOMAINS,
@@ -48,8 +49,17 @@ def validator_node(state: GraphRAGState) -> dict:
             for item in result["errors"]:
                 add_domain_error(domain, item)
     results_by_agent = {result["agent"]: result for _, result in domain_results if result}
+    task_results = state.get("task_results", {})
+    generation = state.get("replan_count", 0)
     for task in state.get("tasks", []):
-        result = results_by_agent.get(task["agent"])
+        # Validate the concrete task instance first. Falling back to the legacy
+        # per-Agent field keeps old checkpoints and direct node tests compatible.
+        task_id = task.get("task_id")
+        task_entry = (
+            task_results.get(task_completion_key(task_id, generation), {})
+            if task_id else {}
+        )
+        result = task_entry.get("result") or results_by_agent.get(task["agent"])
         if not result:
             continue
         returned_tools = {fact.get("tool") for fact in result.get("facts", [])}
@@ -78,7 +88,9 @@ def validator_node(state: GraphRAGState) -> dict:
         returned_tools = {
             fact.get("tool") for fact in state["graph_result"].get("facts", [])
         }
-        expected = required_fact_types("graph_reasoning_agent", state["question"])
+        expected = required_fact_types(
+            "graph_reasoning_agent", state["question"], len(entity_ids)
+        )
         missing_facts = [
             fact_type
             for fact_type in expected

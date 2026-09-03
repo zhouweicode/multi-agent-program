@@ -1,4 +1,6 @@
 """LangGraph 条件路由与依赖感知任务调度。"""
+from langgraph.types import Send
+
 from graph.state import GraphRAGState
 from services.observability import emit_event
 
@@ -17,7 +19,15 @@ def task_completion_key(task_id: str, generation: int) -> str:
 
 
 def scheduled_agents(state: GraphRAGState) -> str | list[str]:
-    """按依赖关系分波调度；sequential 每波一个任务，parallel 执行全部 ready 任务。"""
+    """Compatibility view of the task scheduler, returning Agent names."""
+    selected = ready_tasks(state)
+    if isinstance(selected, str):
+        return selected
+    return [task["agent"] for task in selected]
+
+
+def ready_tasks(state: GraphRAGState) -> str | list[dict]:
+    """按依赖关系分波选择任务；同一 Agent 的不同 task_id 彼此独立。"""
     tasks = state.get("tasks", [])
     if not tasks:
         return "merge"
@@ -47,7 +57,24 @@ def scheduled_agents(state: GraphRAGState) -> str | list[str]:
     emit_event("TASKS_DISPATCHED", thread_id=state.get("thread_id"), execution_mode=mode,
                generation=generation, task_ids=[task["task_id"] for task in selected], agents=agents,
                pending_count=len(pending))
-    return agents
+    return selected
+
+
+def scheduled_task_instances(state: GraphRAGState) -> str | list[Send]:
+    """Fan out ready PlannedTask instances, including duplicate Agent assignments."""
+    selected = ready_tasks(state)
+    if isinstance(selected, str):
+        return "materialize_task_results" if selected == "merge" else selected
+    shared = {
+        "question": state.get("question", ""),
+        "original_question": state.get("original_question"),
+        "resolved_entities": state.get("resolved_entities", {}),
+        "thread_id": state.get("thread_id"),
+        "long_term_memory_prompt": state.get("long_term_memory_prompt"),
+        "web_search_enabled": state.get("web_search_enabled", True),
+        "replan_count": state.get("replan_count", 0),
+    }
+    return [Send("task_executor", shared | {"active_task": task}) for task in selected]
 
 
 def after_rule_validation(state: GraphRAGState) -> str:

@@ -64,7 +64,10 @@ def answer_node(state: GraphRAGState) -> dict:
     semantic = ""
     if verification:
         verdict = "是" if verification["status"] == "PASS" else "不是"
-        semantic = f"\n语义验证结论：{verdict}长期稳定的核心科研合作伙伴（{verification['status']}，置信度 {verification['confidence']:.0%}）。{verification['reason']}。"
+        label = ("长期稳定的核心科研合作伙伴"
+                 if verification.get("claim_type") == "CORE_RESEARCH_PARTNER"
+                 else f"结论 {verification.get('claim_type', verification.get('relation', 'UNKNOWN'))} 成立")
+        semantic = f"\n语义验证结论：{verdict}{label}（{verification['status']}，置信度 {verification['confidence']:.0%}）。{verification['reason']}。"
     has_web = bool(state.get("web_result"))
     if len(entity_ids) > 1:
         synthesis = (f"\n综合结论：现有证据明确支持两人在{'、'.join(signals)}方面存在合作。"

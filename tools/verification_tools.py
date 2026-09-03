@@ -1,18 +1,21 @@
 """Verification Agent 独享的证据与关系验证工具。"""
 from langchain_core.tools import tool
+
 from services.resources import get_evidence_service
 
 
 @tool
-def verify_evidence(evidence_ids: list[str], entity_ids: list[str]) -> dict:
+def verify_evidence(evidence_ids: list[str], entity_ids: list[str],
+                    evidence_records: list[dict] | None = None) -> dict:
     """验证证据 ID 是否全部存在，并返回缺失项。"""
-    return get_evidence_service().verify(evidence_ids, entity_ids)
+    return get_evidence_service().verify(evidence_ids, entity_ids, evidence_records)
 
 
 @tool
-def check_source(evidence_ids: list[str], entity_ids: list[str]) -> dict:
+def check_source(evidence_ids: list[str], entity_ids: list[str],
+                 evidence_records: list[dict] | None = None) -> dict:
     """通过统一证据服务检查证据是否来自当前受信任的数据后端。"""
-    return get_evidence_service().check_sources(evidence_ids, entity_ids)
+    return get_evidence_service().check_sources(evidence_ids, entity_ids, evidence_records)
 
 
 @tool

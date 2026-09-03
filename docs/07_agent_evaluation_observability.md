@@ -74,6 +74,20 @@ python -m scripts.run_agent_evals --check
 输出报告默认写入 `.runtime/eval-report.json`。评测使用 Mock 后端保持确定性；`--live` 可用于真实模型和
 数据库的实验评测，但真实评测不应直接取代 CI 的可重复基线。
 
+真实模型的小样本重复评测使用独立入口：
+
+```bash
+python -m scripts.run_live_agent_evals \
+  --dataset evals/golden_v1.jsonl \
+  --case-types routing,workflow \
+  --limit 10 \
+  --repeats 2
+```
+
+该入口默认拒绝 `MODEL_PROVIDER=mock`，输出 `.runtime/live-agent-eval.json`，额外统计路由稳定性、
+工作流稳定性、非法 Tool 调用率、Agent 不完整结束率、无进展停止率、P95 延迟和平均 Replan。
+`--allow-mock` 仅用于验证评测管线本身，不应把结果当作真实模型报告。
+
 ## 4. CI 回归门禁
 
 基线位于 `evals/baselines/agentops_v1.json`，包含三类约束：

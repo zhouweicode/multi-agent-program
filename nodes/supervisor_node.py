@@ -6,6 +6,7 @@ from graph.state import GraphRAGState
 from models.contracts import DEFAULT_REQUIRED_FACT_TYPES, required_fact_types
 from models.llm import ModelFactory
 from models.schemas import PlannedTask
+from models.settings import Settings
 from services.observability import emit_event
 from services.telemetry import traced_span
 from skills.expert_report.spec import (
@@ -16,6 +17,7 @@ from skills.industry_landscape.spec import (
 )
 from skills.planning import CAPABILITY_BINDINGS, build_skill_plan
 from skills.registry import skill_registry
+from tools.registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +29,39 @@ DOMAIN_TASKS = {
     "graph_reasoning_agent": "查询两位专家的多跳路径、间接关系和路径强度",
     "web_research_agent": "搜索公开网页来源，并提取带 URL 的外部候选证据",
 }
+
+
+def _apply_experience_advice(plan, state: GraphRAGState, is_replan: bool):
+    """Apply only gated strategy hints; never bypass Router or Validator."""
+    mode = Settings.from_env().query_experience_mode
+    match = state.get("experience_match") or {}
+    strategy = state.get("experience_strategy") or {}
+    if mode == "shadow" or is_replan or not match.get("applicable") or not strategy:
+        return plan
+    tools_by_agent = strategy.get("tools_by_agent") or {}
+    updated = []
+    for task in plan.tasks:
+        domain = tool_registry.get_agent(task.agent).domain
+        allowed = set(tool_registry.tool_names(domain))
+        preferred = [name for name in tools_by_agent.get(task.agent, []) if name in allowed]
+        updated.append(task.model_copy(update={"preferred_tools": preferred}))
+    if mode == "active" and state.get("experience_route_agreement"):
+        order = {agent: index for index, agent in enumerate(strategy.get("agents") or [])}
+        # Active mode may reorder the same safe plan, but cannot add or remove domains.
+        if set(order) == {task.agent for task in updated}:
+            updated.sort(key=lambda task: order[task.agent])
+    emit_event(
+        "EXPERIENCE_STRATEGY_ADVISED" if mode == "advisory" else "EXPERIENCE_STRATEGY_APPLIED",
+        thread_id=state.get("thread_id"), mode=mode,
+        pattern_id=match.get("pattern_id"),
+        agents=[task.agent for task in updated],
+        preferred_tools={task.agent: task.preferred_tools for task in updated},
+    )
+    reason = plan.reason + (
+        "；已附加历史策略建议" if mode == "advisory"
+        else "；已应用通过门禁的历史任务顺序和工具偏好"
+    )
+    return plan.model_copy(update={"tasks": updated, "reason": reason})
 
 
 def _guard_complex_plan(question: str, plan, is_replan: bool, web_search_enabled: bool = True):
@@ -51,12 +86,15 @@ def _guard_complex_plan(question: str, plan, is_replan: bool, web_search_enabled
         required.append("web_research_agent")
     if not required:
         return plan
-    planned_by_agent = {task.agent: task for task in plan.tasks}
-    tasks = [planned_by_agent.get(agent) or PlannedTask(
-        task_id=f"task_{agent.removesuffix('_agent')}", agent=agent,
-        goal=DOMAIN_TASKS[agent], required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
-        required_entity_ids=[])
-        for agent in dict.fromkeys(required)]
+    tasks = []
+    for agent in dict.fromkeys(required):
+        planned = [task for task in plan.tasks if task.agent == agent]
+        tasks.extend(planned or [PlannedTask(
+            task_id=f"task_{agent.removesuffix('_agent')}", agent=agent,
+            goal=DOMAIN_TASKS[agent],
+            required_fact_types=DEFAULT_REQUIRED_FACT_TYPES[agent],
+            required_entity_ids=[],
+        )])
     return plan.model_copy(update={"tasks": tasks,
                                    "reason": "根据问题中的明确领域信号校正任务边界并执行"})
 
@@ -104,19 +142,19 @@ def supervisor_node(state: GraphRAGState) -> dict:
             plan = (model.invoke_supervisor(*arguments, memory_context=memory_context)
                     if memory_context else model.invoke_supervisor(*arguments))
         plan = _guard_complex_plan(state["question"], plan, is_replan, state.get("web_search_enabled", True))
+        plan = _apply_experience_advice(plan, state, is_replan)
     normalized_tasks = []
     for task in plan.tasks:
         normalized_tasks.append(task.model_copy(update={
-            "required_fact_types": (task.required_fact_types if skill_id else
-                                    required_fact_types(task.agent, state["question"])),
+            "required_fact_types": (
+                task.required_fact_types
+                or required_fact_types(task.agent, state["question"])
+            ),
             "required_entity_ids": entity_ids,
         }))
     task_ids = [task.task_id for task in normalized_tasks]
-    agents = [task.agent for task in normalized_tasks]
     if len(task_ids) != len(set(task_ids)):
         raise ValueError("Supervisor 计划包含重复 task_id")
-    if len(agents) != len(set(agents)):
-        raise ValueError("同一调度波次不支持给同一个 Agent 分配多个任务")
     plan = plan.model_copy(update={"tasks": normalized_tasks})
     logger.info("Supervisor: mode=%s tasks=%s", plan.execution_mode, [x.agent for x in plan.tasks])
     emit_event("SUPERVISOR_PLANNED", thread_id=state.get("thread_id"), execution_mode=plan.execution_mode, agents=[x.agent for x in plan.tasks],
